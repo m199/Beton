@@ -1,3 +1,9 @@
+/*
+ * Copyright 2005-2026, Daniel Weber.
+ * Copyright 2026, David Beckman.
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
 #ifndef BETON_MEDIA_TABLE_VIEW_H
 #define BETON_MEDIA_TABLE_VIEW_H
 

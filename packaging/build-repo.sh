@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright 2026, David Beckman.
+# All rights reserved. Distributed under the terms of the MIT License.
+
 #
 # Assemble the Indispensable Labs apps repository from the .hpkg files in
 # packaging/out/ PLUS whatever is already published, into packaging/out-repo/.

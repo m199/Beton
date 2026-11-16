@@ -1,4 +1,9 @@
 /*
+ * Copyright 2026, David Beckman.
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
+/*
  * Files and folders dropped onto a sidebar folder, or onto its open track
  * list, go into that folder the way Tracker does it: moved on the same disk,
  * copied from another one. The folder watch then adds them to the library.

@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, David Beckman.
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
 /**
  * @file FFmpegAudioEncoder.cpp
  * @brief AudioFileEncoder on top of libavformat/libavcodec.

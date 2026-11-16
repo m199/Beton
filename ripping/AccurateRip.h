@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, David Beckman.
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
 #ifndef BETON_ACCURATE_RIP_H
 #define BETON_ACCURATE_RIP_H
 

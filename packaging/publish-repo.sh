@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright 2026, David Beckman.
+# All rights reserved. Distributed under the terms of the MIT License.
+
 #
 # Publish packaging/out-repo/ to the Indispensable Labs apps repository on
 # Cloudflare R2.

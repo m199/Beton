@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, David Beckman.
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
 #ifndef BETON_CD_RIP_WINDOW_H
 #define BETON_CD_RIP_WINDOW_H
 
