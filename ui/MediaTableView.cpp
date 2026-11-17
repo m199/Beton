@@ -1559,7 +1559,19 @@ void MediaTableView::_AddBatch(size_t count) {
           // ScrollTo(BRow*) only scrolls minimally, which would leave
           // this row at the bottom edge; scroll explicitly so the
           // previously top-visible row is at the top again.
-          ScrollTo(BPoint(0, rowTop));
+          //
+          // Vertically only. The header owns the horizontal position: the
+          // horizontal scroll bar scrolls it, and it moves the rows by the
+          // difference (TitleView::ScrollTo in Haiku's ColumnListView.cpp).
+          // Setting the rows to x 0 behind its back, with the list
+          // scrolled sideways, left them that far off from then on: after
+          // a tag edit rebuilt the list, scrolling back left drew the rows
+          // two columns right of their headers over an unpainted strip
+          // (2026-11-17).
+          float left = 0;
+          if (BView *outline = ScrollView())
+            left = outline->Bounds().left;
+          ScrollTo(BPoint(left, rowTop));
           scrolled = true;
         }
       }
