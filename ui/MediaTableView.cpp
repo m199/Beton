@@ -2109,12 +2109,15 @@ void MediaTableView::MessageReceived(BMessage *msg) {
     msg->FindInt32("move", &move);
     bool focusLoss = false;
     msg->FindBool("focus_loss", &focusLoss);
-    BRow *editRow = fEditingRow;
     int32 editColIdx = fEditingColIdx;
     BView *targetView = fActiveEditor ? fActiveEditor->Parent() : ScrollView();
-    bool moving = move != 0 && editRow;
+    bool moving = move != 0 && fEditingRow;
     CommitCellEdit(!moving && !focusLoss);
-    if (moving) {
+    // the row as it is after the commit: the view may have rebuilt it
+    BRow *editRow = fCommittedRow;
+    if (moving && !editRow)
+      MakeFocus(true);
+    else if (moving) {
       if (!StartAdjacentCellEdit(editRow, editColIdx, move, targetView))
         MakeFocus(true);
       SetFocusRow(editRow, false);
@@ -2685,6 +2688,11 @@ void MediaTableView::StartCellEdit(BRow *row, BColumn *column, int32 colIdx, flo
   } else if (auto *ifld = dynamic_cast<BIntegerField *>(field)) {
     initialText << ifld->Value();
   }
+  // Kept, so the commit needs nothing from the row (_LiveEditingRow())
+  fEditingOriginal = initialText;
+  fEditingPath = "";
+  if (MediaRow *mr = dynamic_cast<MediaRow *>(row))
+    fEditingPath = mr->Item().path;
 
   fEditingPathPrefix = "";
   if (colIdx == 10) {
@@ -2762,17 +2770,11 @@ void MediaTableView::CommitCellEdit(bool restoreFocus) {
   BView *editorParent = editor->Parent();
 
   BString newText = editor->Text();
-
-  BString originalText;
-  if (fEditingRow) {
-    BField *field = fEditingRow->GetField(fEditingColIdx);
-    if (auto *sf = dynamic_cast<BStringField *>(field))
-      originalText = sf->String();
-    else if (auto *ifld = dynamic_cast<BIntegerField *>(field))
-      originalText << ifld->Value();
-    if (fEditingColIdx == 10 && !fEditingPathPrefix.IsEmpty())
-      originalText.Prepend(fEditingPathPrefix);
-  }
+  // As the edit began: the row may have been rebuilt since, already showing
+  // what an earlier edit of this track wrote
+  BString originalText = fEditingOriginal;
+  fEditingRow = _LiveEditingRow();
+  fCommittedRow = fEditingRow;
 
   BPoint scrollPos(0, 0);
   if (BView *outline = ScrollView()) {
@@ -2803,49 +2805,84 @@ void MediaTableView::CommitCellEdit(bool restoreFocus) {
     return;
   }
 
-  if (fEditingRow) {
-    MediaRow *mr = dynamic_cast<MediaRow *>(fEditingRow);
-    if (mr) {
-      BString path = mr->Item().path;
-      const char *fieldName = FieldNameForColumn(fEditingColIdx);
-      if (fieldName && !path.IsEmpty()) {
-        if (fEditingColIdx == 10) {
-          // Path edits move the file on disk instead of writing tags.
-          BString newPath = newText;
-          if (!newPath.IsEmpty() && !fEditingPathPrefix.IsEmpty()) {
-            if (!newPath.StartsWith("/"))
-              newPath.Prepend("/");
-            newPath.Prepend(fEditingPathPrefix);
-          }
-          if (!newText.IsEmpty() && newPath != path) {
-            BMessage moveMsg(MSG_FILE_MOVE);
-            moveMsg.AddString("from", path);
-            moveMsg.AddString("to", newPath);
-            if (Window())
-              Window()->PostMessage(&moveMsg);
-          }
-        } else {
-          BMessage saveMsg(MSG_PROP_SAVE);
-          saveMsg.AddString("file", path);
-          saveMsg.AddString(fieldName, newText);
-          if (fFolderMode)
-            saveMsg.AddBool("force_tags", true);
-          if (Window())
-            Window()->PostMessage(&saveMsg);
-        }
+  // The track's file as the edit began: written even when its row is gone
+  BString path = fEditingPath;
+  const char *fieldName = FieldNameForColumn(fEditingColIdx);
+  if (fieldName && !path.IsEmpty()) {
+    if (fEditingColIdx == 10) {
+      // Path edits move the file on disk instead of writing tags.
+      BString newPath = newText;
+      if (!newPath.IsEmpty() && !fEditingPathPrefix.IsEmpty()) {
+        if (!newPath.StartsWith("/"))
+          newPath.Prepend("/");
+        newPath.Prepend(fEditingPathPrefix);
       }
+      if (!newText.IsEmpty() && newPath != path) {
+        BMessage moveMsg(MSG_FILE_MOVE);
+        moveMsg.AddString("from", path);
+        moveMsg.AddString("to", newPath);
+        if (Window())
+          Window()->PostMessage(&moveMsg);
+      }
+    } else {
+      BMessage saveMsg(MSG_PROP_SAVE);
+      saveMsg.AddString("file", path);
+      saveMsg.AddString(fieldName, newText);
+      if (fFolderMode)
+        saveMsg.AddBool("force_tags", true);
+      if (Window())
+        Window()->PostMessage(&saveMsg);
     }
   }
 
   fEditingRow = nullptr;
   fEditingColIdx = -1;
   fEditingPathPrefix = "";
+  fEditingPath = "";
+}
+
+/**
+ * @brief The row being edited, as it is now: the row the edit began on if it
+ * is still listed and still shows the same track, else the row now showing
+ * that track (the view was rebuilt), else null.
+ *
+ * The library drops or rebuilds rows while an editor is open. In Library
+ * mode a tag edit that changes a filter field has the content list rebuilt
+ * (LibraryController::HandleMediaItemFound posts MSG_VIEWS_REFRESH, as of
+ * eba3c9e): an artist edit did, and committing the title typed meanwhile read
+ * the deleted row and crashed (2026-11-17). fEditingRow is compared, never
+ * dereferenced, until it is found listed; a freed row's memory may hold
+ * another track's row by then, which the path check catches.
+ */
+BRow *MediaTableView::_LiveEditingRow() {
+  if (!fEditingRow)
+    return nullptr;
+  for (int32 i = 0; i < CountRows(); i++) {
+    BRow *row = RowAt(i);
+    if (row != fEditingRow)
+      continue;
+    if (fEditingPath.IsEmpty())
+      return row;
+    MediaRow *mr = dynamic_cast<MediaRow *>(row);
+    if (mr && mr->Item().path == fEditingPath)
+      return row;
+    break;
+  }
+  if (fEditingPath.IsEmpty())
+    return nullptr;
+  for (int32 i = 0; i < CountRows(); i++) {
+    const MediaItem *mi = ItemAt(i);
+    if (mi && mi->path == fEditingPath)
+      return RowAt(i);
+  }
+  return nullptr;
 }
 
 void MediaTableView::CancelCellEdit() {
   if (!fActiveEditor)
     return;
 
+  fEditingRow = _LiveEditingRow();
   RemoveEditorKeyFilter();
 
   CellTextControl *editor = fActiveEditor;

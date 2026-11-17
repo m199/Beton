@@ -231,9 +231,16 @@ private:
   bool fRatingEditable{true};
   bool fFolderMode{false};
   CellTextControl *fActiveEditor{nullptr};
+  /// The row the edit began on. The library can rebuild or drop rows while
+  /// an editor is open (a tag write refreshes the view), so it may be gone:
+  /// read it only through _LiveEditingRow().
   BRow *fEditingRow{nullptr};
   int32 fEditingColIdx{-1};
   BString fEditingPathPrefix; ///< Volume mount point hidden from the path editor
+  BString fEditingPath;     ///< The edited track's file, as the edit began
+  BString fEditingOriginal; ///< The cell's text as the edit began
+  BRow *fCommittedRow{nullptr}; ///< The live row of the last commit, or null
+  BRow *_LiveEditingRow();
   ///@}
 };
 
