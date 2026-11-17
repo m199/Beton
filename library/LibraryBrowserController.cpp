@@ -227,6 +227,16 @@ LibraryBrowserController::SelectedDatas(SingleColumnListView *v) {
 
 namespace {
 
+/** A tag value as the filters list and match it: without the white space
+ *  around it. Old ID3 tags pad names with spaces, and "Maroon 5" padded with
+ *  5 and with 23 spaces were Artist entries of their own, each with one
+ *  track (2026-11-17). Only the filters see this; the item keeps its value. */
+BString FilterValue(const BString &value) {
+  BString trimmed(value);
+  trimmed.Trim();
+  return trimmed;
+}
+
 bool Contains(const std::vector<BString> &list, const BString &value) {
   return std::find(list.begin(), list.end(), value) != list.end();
 }
@@ -238,9 +248,10 @@ bool PassesFilter(const std::vector<BString> &selected,
                   const BString &value) {
   if (selected.empty() || Contains(selected, allLabel))
     return true;
-  if (value.IsEmpty())
+  BString trimmed = FilterValue(value);
+  if (trimmed.IsEmpty())
     return Contains(selected, noLabel);
-  return Contains(selected, value);
+  return Contains(selected, trimmed);
 }
 
 } // namespace
@@ -492,7 +503,8 @@ void LibraryBrowserController::UpdateFilteredViews(
   auto albumOK = [&](const MediaItem &i) {
     if (selAlbum.empty() || Contains(selAlbum, kLabelAllAlbum))
       return true;
-    if (i.album.IsEmpty())
+    const BString album = FilterValue(i.album);
+    if (album.IsEmpty())
       return Contains(selAlbum, kLabelNoAlbum);
 
     for (size_t k = 0; k < selAlbum.size(); k++) {
@@ -509,7 +521,7 @@ void LibraryBrowserController::UpdateFilteredViews(
         continue;
       }
       /// Standard album name match
-      if (i.album == selAlbum[k])
+      if (album == selAlbum[k])
         return true;
     }
     return false;
@@ -532,22 +544,25 @@ void LibraryBrowserController::UpdateFilteredViews(
     if (!textOK(it))
       continue;
 
-    if (it.genre.IsEmpty())
+    const BString genre = FilterValue(it.genre);
+    if (genre.IsEmpty())
       hasUntaggedGenreSrc = true;
     else
-      allGenres.insert(it.genre);
+      allGenres.insert(genre);
 
     if (genreOK(it)) {
-      if (it.artist.IsEmpty())
+      const BString artist = FilterValue(it.artist);
+      if (artist.IsEmpty())
         hasUntaggedArtistForGenre = true;
       else
-        artistsForGenre.insert(it.artist);
+        artistsForGenre.insert(artist);
 
       if (artistOK(it)) {
-        if (it.album.IsEmpty())
+        const BString album = FilterValue(it.album);
+        if (album.IsEmpty())
           hasUntaggedAlbumForGA = true;
         else {
-          albumsForGA[it.album].insert(
+          albumsForGA[album].insert(
               {it.year, AlbumIdentityForItem(it, fIsRadioFilterMode)});
         }
       }
@@ -772,7 +787,8 @@ void LibraryBrowserController::AddMediaItem(const MediaItem &item) {
 
   auto addUnique = [](SingleColumnListView *v, const BString &val,
                       const char *emptyLabel) {
-    BString text = val.IsEmpty() ? BString(emptyLabel) : val;
+    BString trimmed = FilterValue(val);
+    BString text = trimmed.IsEmpty() ? BString(emptyLabel) : trimmed;
 
     for (int32 i = 0; i < v->CountItems(); i++) {
       if (v->ItemAt(i) == text)
