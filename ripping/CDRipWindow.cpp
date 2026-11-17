@@ -31,13 +31,16 @@
 #include <MenuField.h>
 #include <MenuItem.h>
 #include <MessageRunner.h>
+#include <Node.h>
 #include <Path.h>
 #include <PopUpMenu.h>
 #include <Roster.h>
 #include <StatusBar.h>
 #include <StringView.h>
 #include <TextControl.h>
+#include <TextView.h>
 #include <Volume.h>
+#include <fs_info.h>
 
 #include <algorithm>
 #include <stdlib.h>
@@ -67,7 +70,12 @@ enum {
   kMsgTrashTrack = 'rttr', ///< Move a track's ripped file to the Trash.
   kMsgSkipTrack = 'rskp',
   kMsgGiveUpEdited = 'rgue',
-  kMsgTick = 'rtik' ///< Once a second while ripping: the running times.
+  kMsgTick = 'rtik', ///< Once a second while ripping: the running times.
+  kMsgEditCell = 'redc',  ///< A click asks to edit a cell: "index", "column".
+  kMsgStartEdit = 'rsed', ///< ...after the double-click time, unless played.
+  kMsgEditDone = 'redd',  ///< From the editor: "commit", "move", "editor".
+  kMsgAlbumEdited = 'raed',    ///< Album fields typed in.
+  kMsgAlbumCommitted = 'raec'  ///< Album field left: save to the disc.
 };
 
 /** How a finished track came out; picks its text color in the track list. */
@@ -168,10 +176,28 @@ public:
     SetWantsEvents(true);
   }
 
+  /** Makes a click on the selected row's cell edit it (kColTitle...). */
+  void SetEditColumn(int32 column) { fEditColumn = column; }
+
   void MouseDown(BColumnListView *parent, BRow *row, BField *, BRect,
                  BPoint where, uint32 buttons) override {
-    if ((buttons & B_SECONDARY_MOUSE_BUTTON) == 0 || row == nullptr)
+    if (row == nullptr)
       return;
+    if ((buttons & B_SECONDARY_MOUSE_BUTTON) == 0) {
+      // Called before the list changes the selection: a click on the row
+      // that was already selected, like a rename in Tracker. The window
+      // waits out the double-click time, as a double click plays.
+      int32 clicks = 1;
+      if (BMessage *current = parent->Window()->CurrentMessage())
+        current->FindInt32("clicks", &clicks);
+      if (fEditColumn >= 0 && row->IsSelected() && clicks == 1) {
+        BMessage edit(kMsgEditCell);
+        edit.AddInt32("index", parent->IndexOf(row));
+        edit.AddInt32("column", fEditColumn);
+        parent->Window()->PostMessage(&edit);
+      }
+      return;
+    }
     // Opened by the window once this click is handled, so the menu doesn't
     // run inside the list's own mouse tracking.
     BMessage menu(kMsgTrackMenu);
@@ -212,6 +238,9 @@ public:
     BStringColumn::DrawField(field, rect, parent);
     parent->SetHighColor(old);
   }
+
+private:
+  int32 fEditColumn = -1;
 };
 
 
@@ -259,6 +288,73 @@ BString FormatDuration(int32 seconds) {
 
 } // namespace
 
+/**
+ * The text field laid over a Title or Artist cell while it is edited.
+ * Enter saves, Escape cancels, Tab and Shift-Tab save and go on to the next
+ * or previous cell; clicking elsewhere saves. Tells the window once, with
+ * kMsgEditDone; the window removes it.
+ */
+class CellEditor : public BTextView {
+public:
+  CellEditor(BRect frame, const char *text, BMessenger target)
+      : BTextView(frame, "cell editor",
+                  BRect(3, 1, frame.Width() - 3, frame.Height() - 1),
+                  B_FOLLOW_NONE, B_WILL_DRAW | B_NAVIGABLE),
+        fTarget(target) {
+    SetWordWrap(false);
+    DisallowChar('\n');
+    SetViewUIColor(B_DOCUMENT_BACKGROUND_COLOR);
+    SetText(text);
+  }
+
+  /** The window is done with this editor: no more kMsgEditDone. */
+  void Finish() { fDone = true; }
+
+  void KeyDown(const char *bytes, int32 count) override {
+    switch (bytes[0]) {
+    case B_ENTER:
+      _Done(true, 0);
+      return;
+    case B_ESCAPE:
+      _Done(false, 0);
+      return;
+    case B_TAB:
+      _Done(true, (modifiers() & B_SHIFT_KEY) != 0 ? -1 : 1);
+      return;
+    }
+    BTextView::KeyDown(bytes, count);
+  }
+
+  void MakeFocus(bool focus) override {
+    BTextView::MakeFocus(focus);
+    if (!focus)
+      _Done(true, 0);
+  }
+
+  void Draw(BRect update) override {
+    BTextView::Draw(update);
+    const rgb_color old = HighColor();
+    SetHighColor(ui_color(B_KEYBOARD_NAVIGATION_COLOR));
+    StrokeRect(Bounds());
+    SetHighColor(old);
+  }
+
+private:
+  void _Done(bool commit, int32 move) {
+    if (fDone)
+      return;
+    fDone = true;
+    BMessage done(kMsgEditDone);
+    done.AddBool("commit", commit);
+    done.AddInt32("move", move);
+    done.AddPointer("editor", this);
+    fTarget.SendMessage(&done);
+  }
+
+  BMessenger fTarget;
+  bool fDone = false;
+};
+
 CDRipWindow::CDRipWindow(const BString &discPath, const BString &discLabel,
                          BMessenger libraryTarget)
     : BWindow(BRect(0, 0, 800, 300), B_TRANSLATE("Rip audio CD"),
@@ -282,26 +378,32 @@ CDRipWindow::CDRipWindow(const BString &discPath, const BString &discLabel,
 
 CDRipWindow::~CDRipWindow() {
   delete fTicker;
+  delete fEditDelay;
   delete fRipper;
   delete fFolderPanel;
 }
 
 void CDRipWindow::_LoadTracks() {
   fTracks = CddaTracks::Read(fDiscPath);
-  for (MediaItem &t : fTracks) {
+  fTitleFromFile.assign(fTracks.size(), false);
+  for (size_t i = 0; i < fTracks.size(); i++) {
+    MediaItem &t = fTracks[i];
     t.trackTotal = (int32)fTracks.size();
     // Untitled discs fall back to the file name ("01 Audio Track.wav");
     // drop the extension so it doesn't end up inside the new file name.
     BPath p(t.path.String());
     if (p.InitCheck() == B_OK && t.title == p.Leaf()) {
+      fTitleFromFile[i] = true;
       int32 dot = t.title.FindLast('.');
       if (dot > 0)
         t.title.Truncate(dot);
     }
   }
+  if (!fTracks.empty())
+    fAlbumArtist = fTracks.front().albumArtist;
 }
 
-void CDRipWindow::_BuildUI() {
+void CDRipWindow::_UpdateDiscInfo() {
   int32 seconds = 0;
   for (const MediaItem &t : fTracks)
     seconds += t.duration;
@@ -310,8 +412,12 @@ void CDRipWindow::_BuildUI() {
   detail.SetToFormat(B_TRANSLATE("%ld tracks, %s"), (long)fTracks.size(),
                      FormatDuration(seconds).String());
   info << "  (" << detail << ")";
+  fDiscInfo->SetText(info.String());
+}
 
-  fDiscInfo = new BStringView("disc", info.String());
+void CDRipWindow::_BuildUI() {
+  fDiscInfo = new BStringView("disc", "");
+  _UpdateDiscInfo();
   fDiscInfo->SetFont(be_bold_font);
   fDiscInfo->SetTruncation(B_TRUNCATE_END);
   fDiscInfo->SetExplicitMinSize(BSize(200, B_SIZE_UNSET));
@@ -336,10 +442,14 @@ void CDRipWindow::_BuildUI() {
   fTrackList->AddColumn(fCheckColumn, kColCheck);
   fTrackList->AddColumn(new TrackColumn("#", 30, 26, 50, B_TRUNCATE_END,
                                           B_ALIGN_RIGHT), kColNumber);
-  fTrackList->AddColumn(new TrackColumn(B_TRANSLATE("Title"), 170, 60, 500,
-                                          B_TRUNCATE_END), kColTitle);
-  fTrackList->AddColumn(new TrackColumn(B_TRANSLATE("Artist"), 125, 50, 400,
-                                          B_TRUNCATE_END), kColArtist);
+  TrackColumn *titleColumn = new TrackColumn(B_TRANSLATE("Title"), 170, 60,
+                                             500, B_TRUNCATE_END);
+  titleColumn->SetEditColumn(kColTitle);
+  fTrackList->AddColumn(titleColumn, kColTitle);
+  TrackColumn *artistColumn = new TrackColumn(B_TRANSLATE("Artist"), 125, 50,
+                                              400, B_TRUNCATE_END);
+  artistColumn->SetEditColumn(kColArtist);
+  fTrackList->AddColumn(artistColumn, kColArtist);
   fTrackList->AddColumn(new TrackColumn(B_TRANSLATE("Length"), 52, 40, 80,
                                           B_TRUNCATE_END, B_ALIGN_RIGHT),
                         kColLength);
@@ -376,6 +486,41 @@ void CDRipWindow::_BuildUI() {
   fTrackList->SetExplicitMinSize(BSize(B_SIZE_UNSET, 180));
   fTrackList->SetInvocationMessage(new BMessage(kMsgPlayTrack));
   fRippedPaths.assign(fTracks.size(), BString());
+
+  // The album: what all tracks share. A field typed in changes the tracks
+  // at once (the preview follows); leaving it saves it to the disc.
+  BString album, albumArtist, year, genre;
+  if (!fTracks.empty()) {
+    album = fTracks.front().album;
+    albumArtist = fTracks.front().albumArtist;
+    if (fTracks.front().year > 0)
+      year << fTracks.front().year;
+    genre = fTracks.front().genre;
+  }
+  fAlbumArtistControl =
+      new BTextControl("album_artist", B_TRANSLATE("Album artist:"),
+                       albumArtist.String(), new BMessage(kMsgAlbumCommitted));
+  fAlbumArtistControl->SetModificationMessage(new BMessage(kMsgAlbumEdited));
+  fAlbumControl = new BTextControl("album", B_TRANSLATE("Album:"),
+                                   album.String(),
+                                   new BMessage(kMsgAlbumCommitted));
+  fAlbumControl->SetModificationMessage(new BMessage(kMsgAlbumEdited));
+  fYearControl = new BTextControl("year", B_TRANSLATE("Year:"), year.String(),
+                                  new BMessage(kMsgAlbumCommitted));
+  fYearControl->SetModificationMessage(new BMessage(kMsgAlbumEdited));
+  {
+    // Digits only, four of them.
+    BTextView *text = fYearControl->TextView();
+    for (uint32 c = 0; c < 256; c++) {
+      if (c < '0' || c > '9')
+        text->DisallowChar(c);
+    }
+    text->SetMaxBytes(4);
+  }
+  fGenreControl = new BTextControl("genre", B_TRANSLATE("Genre:"),
+                                   genre.String(),
+                                   new BMessage(kMsgAlbumCommitted));
+  fGenreControl->SetModificationMessage(new BMessage(kMsgAlbumEdited));
 
   fAllCheck = new BCheckBox("all", B_TRANSLATE("All tracks"),
                             new BMessage(kMsgToggleAll));
@@ -490,6 +635,13 @@ void CDRipWindow::_BuildUI() {
   BLayoutBuilder::Group<>(this, B_VERTICAL)
     .SetInsets(B_USE_WINDOW_INSETS)
     .Add(fDiscInfo)
+    .AddGrid(B_USE_DEFAULT_SPACING, B_USE_SMALL_SPACING)
+      .AddTextControl(fAlbumArtistControl, 0, 0)
+      .AddTextControl(fAlbumControl, 0, 1)
+      .AddTextControl(fYearControl, 2, 0)
+      .AddTextControl(fGenreControl, 2, 1)
+      .SetColumnWeight(1, 3.0f)
+    .End()
     .Add(fAllCheck)
     .Add(fTrackList, 10)
     .AddGrid(B_USE_DEFAULT_SPACING, B_USE_SMALL_SPACING)
@@ -812,6 +964,10 @@ void CDRipWindow::_SetRipping(bool ripping) {
   fLibraryCheck->SetEnabled(!ripping);
   fGiveUpControl->SetEnabled(!ripping);
   fAllCheck->SetEnabled(!ripping);
+  fAlbumArtistControl->SetEnabled(!ripping);
+  fAlbumControl->SetEnabled(!ripping);
+  fYearControl->SetEnabled(!ripping);
+  fGenreControl->SetEnabled(!ripping);
   static_cast<CheckColumn *>(fCheckColumn)->SetLocked(ripping);
   fTrackList->Invalidate();
   fShowButton->SetEnabled(!fOutputFolder.IsEmpty());
@@ -825,6 +981,12 @@ void CDRipWindow::_SetRipping(bool ripping) {
 }
 
 void CDRipWindow::_StartRip() {
+  // The rip takes the names as they are now: an edit in progress counts,
+  // and they are on the disc too before it starts.
+  if (fEditor != nullptr)
+    _FinishEdit(true, 0);
+  _ApplyAlbumFields(true);
+
   _ReadControls();
   int32 offset = 0;
   bool offsetKnown = false;
@@ -1369,6 +1531,20 @@ void CDRipWindow::_ShowTrackMenu(int32 index, BPoint where) {
   play->SetEnabled(hasFile);
   menu->AddItem(play);
   menu->AddSeparatorItem();
+  const struct {
+    const char *label;
+    int32 column;
+  } edits[] = {{B_TRANSLATE("Edit title"), kColTitle},
+               {B_TRANSLATE("Edit artist"), kColArtist}};
+  for (const auto &e : edits) {
+    BMessage *edit = new BMessage(kMsgStartEdit);
+    edit->AddInt32("index", index);
+    edit->AddInt32("column", e.column);
+    BMenuItem *item = new BMenuItem(e.label, edit);
+    item->SetEnabled(fRipper == nullptr);
+    menu->AddItem(item);
+  }
+  menu->AddSeparatorItem();
   BMessage *trash = new BMessage(kMsgTrashTrack);
   trash->AddInt32("index", index);
   BMenuItem *trashItem =
@@ -1457,6 +1633,269 @@ void CDRipWindow::_PlaySelectedTrack() {
   fLibraryTarget.SendMessage(&play);
 }
 
+void CDRipWindow::_StartEdit(int32 index, int32 column) {
+  if (fRipper != nullptr || index < 0 || index >= (int32)fTracks.size() ||
+      (column != kColTitle && column != kColArtist))
+    return;
+  if (fEditor != nullptr)
+    _FinishEdit(true, 0);
+
+  BRow *row = fTrackList->RowAt(index);
+  BColumn *col = fTrackList->ColumnAt(column);
+  if (row == nullptr || col == nullptr)
+    return;
+  fTrackList->DeselectAll();
+  fTrackList->AddToSelection(row);
+  fTrackList->ScrollTo(row);
+
+  const MediaItem &t = fTracks[index];
+  fEditor = new CellEditor(fTrackList->GetFieldRect(row, col),
+                           column == kColTitle ? t.title.String()
+                                               : t.artist.String(),
+                           BMessenger(this));
+  fEditIndex = index;
+  fEditColumn = column;
+  // The window takes Escape before any view does, to close itself: not
+  // while a cell is edited, where it cancels the edit.
+  fSavedFlags = Flags();
+  SetFlags(Flags() & ~B_CLOSE_ON_ESCAPE);
+  // In the list's own view, so it sits on the cell and scrolls with it.
+  fTrackList->ScrollView()->AddChild(fEditor);
+  fEditor->MakeFocus(true);
+  fEditor->SelectAll();
+}
+
+void CDRipWindow::_FinishEdit(bool commit, int32 move) {
+  if (fEditor == nullptr)
+    return;
+  CellEditor *editor = fEditor;
+  fEditor = nullptr;
+  BString text(editor->Text());
+  text.Trim();
+  const int32 index = fEditIndex;
+  const int32 column = fEditColumn;
+  editor->Finish();
+  editor->RemoveSelf();
+  delete editor;
+  SetFlags(fSavedFlags);
+
+  // A track has a title; an empty artist means the album artist's.
+  if (commit && index >= 0 && index < (int32)fTracks.size() &&
+      !(column == kColTitle && text.IsEmpty())) {
+    MediaItem &t = fTracks[index];
+    BString &value = column == kColTitle ? t.title : t.artist;
+    if (text != value) {
+      value = text;
+      if (column == kColTitle)
+        fTitleFromFile[index] = false;
+      if (BRow *row = fTrackList->RowAt(index)) {
+        if (auto *field = static_cast<BStringField *>(row->GetField(column)))
+          field->SetString(text.String());
+        fTrackList->UpdateRow(row);
+      }
+      const status_t status = _SaveTrackToDisc(index);
+      if (status != B_OK) {
+        BString message;
+        message.SetToFormat(B_TRANSLATE("Not saved to the disc: %s"),
+                            strerror(status));
+        _SetTrackStatus(index, message.String());
+      }
+      _UpdatePreview();
+    }
+  }
+
+  // Tab: Title, Artist, the next track's Title, ...
+  if (move != 0 && index >= 0) {
+    const int32 cell = index * 2 + (column == kColTitle ? 0 : 1) + move;
+    if (cell >= 0 && cell < (int32)fTracks.size() * 2) {
+      _StartEdit(cell / 2, cell % 2 == 0 ? kColTitle : kColArtist);
+      return;
+    }
+  }
+  fTrackList->MakeFocus(true);
+}
+
+void CDRipWindow::DispatchMessage(BMessage *msg, BHandler *target) {
+  // The window gives Enter to the default button (Rip) whatever has the
+  // focus; in a cell being edited it saves the edit instead.
+  if (fEditor != nullptr && CurrentFocus() == fEditor &&
+      (msg->what == B_KEY_DOWN || msg->what == B_KEY_UP) &&
+      target == DefaultButton())
+    target = fEditor;
+  BWindow::DispatchMessage(msg, target);
+}
+
+void CDRipWindow::_ApplyAlbumFields(bool save) {
+  BString artist(fAlbumArtistControl->Text());
+  artist.Trim();
+  BString album(fAlbumControl->Text());
+  album.Trim();
+  const int32 year = atoi(fYearControl->Text());
+  BString genre(fGenreControl->Text());
+  genre.Trim();
+  for (size_t i = 0; i < fTracks.size(); i++) {
+    MediaItem &t = fTracks[i];
+    // A track by the album artist follows it; a compilation's own track
+    // artists stay.
+    if (t.artist == fAlbumArtist && t.artist != artist) {
+      t.artist = artist;
+      if (BRow *row = fTrackList->RowAt((int32)i)) {
+        if (auto *field = static_cast<BStringField *>(row->GetField(kColArtist)))
+          field->SetString(artist.String());
+        fTrackList->UpdateRow(row);
+      }
+    }
+    t.albumArtist = artist;
+    t.album = album;
+    t.year = year > 0 ? year : 0;
+    t.genre = genre;
+  }
+  fAlbumArtist = artist;
+  _UpdatePreview();
+
+  if (save && fAlbumDirty) {
+    fAlbumDirty = false;
+    _SaveAlbumToDisc();
+  }
+}
+
+status_t CDRipWindow::_SaveTrackToDisc(int32 index) {
+  MediaItem &t = fTracks[index];
+  BNode node(t.path.String());
+  status_t status = node.InitCheck();
+  if (status != B_OK)
+    return status;
+
+  // The attributes cddb_lookup writes (cdda keeps them with the disc).
+  if (!fTitleFromFile[index])
+    node.WriteAttrString("Media:Title", &t.title);
+  if (!t.artist.IsEmpty())
+    node.WriteAttrString("Audio:Artist", &t.artist);
+  else
+    node.RemoveAttr("Audio:Artist");
+  if (!t.album.IsEmpty())
+    node.WriteAttrString("Audio:Album", &t.album);
+  else
+    node.RemoveAttr("Audio:Album");
+  if (t.year > 0)
+    node.WriteAttr("Media:Year", B_INT32_TYPE, 0, &t.year, sizeof(t.year));
+  else
+    node.RemoveAttr("Media:Year");
+  // Stock cdda wrote CD-Text's genre as Audio:Genre, which CddaTracks
+  // falls back to: drop it so it can't come back.
+  node.RemoveAttr("Audio:Genre");
+  if (!t.genre.IsEmpty())
+    node.WriteAttrString("Media:Genre", &t.genre);
+  else
+    node.RemoveAttr("Media:Genre");
+
+  // A track nobody named keeps cdda's "Track 01.wav".
+  if (fTitleFromFile[index])
+    return B_OK;
+
+  // Named as cddb_lookup names it: "01 Title.wav", or "01 Artist -
+  // Title.wav" for a track with an artist of its own.
+  BPath path(t.path.String());
+  if (path.InitCheck() != B_OK)
+    return path.InitCheck();
+  BString leaf(path.Leaf());
+  BString extension;
+  const int32 dot = leaf.FindLast('.');
+  if (dot > 0)
+    leaf.CopyInto(extension, dot, leaf.Length() - dot);
+  BString name;
+  name.SetToFormat("%02ld ", (long)t.track);
+  if (!t.artist.IsEmpty() && t.artist != t.albumArtist)
+    name << t.artist << " - ";
+  name << t.title;
+  name.ReplaceSet("/", " ");
+  // Room for the extension in a file name (B_FILE_NAME_LENGTH bytes).
+  const int32 room = B_FILE_NAME_LENGTH - 1 - extension.Length();
+  if (name.Length() > room)
+    name.TruncateChars(room);
+  while (name.Length() > room)
+    name.TruncateChars(name.CountChars() - 1);
+  name << extension;
+  if (name == leaf)
+    return B_OK;
+
+  BEntry entry(t.path.String());
+  status = entry.Rename(name.String());
+  if (status != B_OK)
+    return status;
+  BPath renamed;
+  if (entry.GetPath(&renamed) == B_OK)
+    t.path = renamed.Path();
+  return B_OK;
+}
+
+void CDRipWindow::_SaveAlbumToDisc() {
+  if (fTracks.empty())
+    return;
+  const BString album = fTracks.front().album;
+
+  BNode root(fDiscPath.String());
+  if (root.InitCheck() == B_OK) {
+    // CddaTracks reads the album artist from here.
+    if (!fAlbumArtist.IsEmpty())
+      root.WriteAttrString("Audio:Artist", &fAlbumArtist);
+    else
+      root.RemoveAttr("Audio:Artist");
+    // Named now: the matches cddb_lookup could only offer are done with.
+    root.RemoveAttr("CDDB:candidates");
+  }
+
+  for (int32 i = 0; i < (int32)fTracks.size(); i++) {
+    const status_t status = _SaveTrackToDisc(i);
+    if (status != B_OK) {
+      BString message;
+      message.SetToFormat(B_TRANSLATE("Not saved to the disc: %s"),
+                          strerror(status));
+      _SetTrackStatus(i, message.String());
+    }
+  }
+
+  // The volume last: renaming it renames its mount point, which is in
+  // every track's path.
+  BString name(fAlbumArtist);
+  if (!album.IsEmpty()) {
+    if (!name.IsEmpty())
+      name << " - ";
+    name << album;
+  }
+  name.ReplaceSet("/", " ");
+  while (name.Length() > B_FILE_NAME_LENGTH - 1)
+    name.TruncateChars(name.CountChars() - 1);
+  if (name.IsEmpty())
+    return;
+  BVolume volume(dev_for_path(fDiscPath.String()));
+  if (volume.InitCheck() != B_OK || volume.SetName(name.String()) != B_OK)
+    return;
+  fDiscLabel = name;
+  _UpdateDiscInfo();
+
+  BDirectory rootDir;
+  BEntry rootEntry;
+  BPath rootPath;
+  if (volume.GetRootDirectory(&rootDir) != B_OK ||
+      rootDir.GetEntry(&rootEntry) != B_OK ||
+      rootEntry.GetPath(&rootPath) != B_OK || fDiscPath == rootPath.Path())
+    return;
+  const BString old = fDiscPath;
+  BString oldPrefix(old);
+  oldPrefix << '/';
+  fFormerDiscPaths.push_back(old);
+  fDiscPath = rootPath.Path();
+  for (MediaItem &t : fTracks) {
+    if (t.path.StartsWith(oldPrefix)) {
+      t.path.Remove(0, old.Length());
+      t.path.Prepend(fDiscPath);
+    }
+    if (t.base == old)
+      t.base = fDiscPath;
+  }
+}
+
 void CDRipWindow::MessageReceived(BMessage *msg) {
   switch (msg->what) {
   case kMsgFormatChanged:
@@ -1477,10 +1916,57 @@ void CDRipWindow::MessageReceived(BMessage *msg) {
     break;
 
   case kMsgPlayTrack:
+    // A double click also cancels the edit its first click asked for.
+    fLastInvoke = system_time();
     // A double click on a checkbox toggles it twice; that is not a request
     // to play.
     if (system_time() - fLastToggle > 1000000)
       _PlaySelectedTrack();
+    break;
+
+  case kMsgEditCell: {
+    // Wait out the double-click time: the click may be the first of a
+    // double click, which plays instead.
+    bigtime_t clickSpeed = 500000;
+    get_click_speed(&clickSpeed);
+    fEditRequested = system_time();
+    BMessage start(*msg);
+    start.what = kMsgStartEdit;
+    start.AddBool("delayed", true);
+    delete fEditDelay;
+    fEditDelay = new BMessageRunner(BMessenger(this), &start, clickSpeed, 1);
+    break;
+  }
+
+  case kMsgStartEdit: {
+    if (msg->GetBool("delayed", false)) {
+      delete fEditDelay;
+      fEditDelay = nullptr;
+      if (fLastInvoke >= fEditRequested)
+        break;
+    }
+    int32 index = -1, column = -1;
+    if (msg->FindInt32("index", &index) == B_OK &&
+        msg->FindInt32("column", &column) == B_OK)
+      _StartEdit(index, column);
+    break;
+  }
+
+  case kMsgEditDone: {
+    void *editor = nullptr;
+    msg->FindPointer("editor", &editor);
+    if (editor != nullptr && editor == fEditor)
+      _FinishEdit(msg->GetBool("commit", false), msg->GetInt32("move", 0));
+    break;
+  }
+
+  case kMsgAlbumEdited:
+    fAlbumDirty = true;
+    _ApplyAlbumFields(false);
+    break;
+
+  case kMsgAlbumCommitted:
+    _ApplyAlbumFields(true);
     break;
 
   case kMsgTrackMenu: {
@@ -1600,7 +2086,11 @@ void CDRipWindow::MessageReceived(BMessage *msg) {
     msg->FindString("path", &path);
     BMessage eject(*msg);
     eject.AddBool("rip_window_done", true);
-    if (path != fDiscPath) {
+    // Naming the disc renames its mount point; the sidebar may still have
+    // the old path until it rescans.
+    if (path != fDiscPath &&
+        std::find(fFormerDiscPaths.begin(), fFormerDiscPaths.end(), path) ==
+            fFormerDiscPaths.end()) {
       fLibraryTarget.SendMessage(&eject);
       break;
     }
@@ -1623,6 +2113,13 @@ void CDRipWindow::MessageReceived(BMessage *msg) {
       delete fRipper;
       fRipper = nullptr;
     }
+    // Names edited but not saved yet go to the disc while it's still there.
+    if (fEditor != nullptr)
+      _FinishEdit(true, 0);
+    _ApplyAlbumFields(true);
+    // The disc's mount point, as it is now, is the one to eject.
+    eject.RemoveName("path");
+    eject.AddString("path", fDiscPath);
     _ReadControls();
     fSettings.Save();
     fLibraryTarget.SendMessage(&eject);
@@ -1666,6 +2163,10 @@ bool CDRipWindow::QuitRequested() {
     delete fRipper;
     fRipper = nullptr;
   }
+
+  if (fEditor != nullptr)
+    _FinishEdit(true, 0);
+  _ApplyAlbumFields(true);
 
   _ReadControls();
   fSettings.Save();

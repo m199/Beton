@@ -27,12 +27,19 @@ class BStatusBar;
 class BStringView;
 class BTextControl;
 class CDRipper;
+class CellEditor;
 
 /**
  * @class CDRipWindow
  * @brief Lets the user pick a format, folder and naming pattern, then rips
  *        the whole disc with CDRipper and shows each track's AccurateRip
  *        result.
+ *
+ * Album artist, album, and each track's title and artist can be edited
+ * before ripping: the album in two fields above the track list, a title or
+ * artist in place in the list. The names go into the file names and tags,
+ * and are saved to the disc too (cdda keeps them), as cddb_lookup names a
+ * disc.
  *
  * Opened from the sidebar's CD row. When a rip completes and "Add tracks to
  * library" is on, the new files are sent to @p libraryTarget as
@@ -46,10 +53,14 @@ public:
   ~CDRipWindow() override;
 
   void MessageReceived(BMessage *msg) override;
+  /** While a cell is edited, gives it the Enter the default button takes. */
+  void DispatchMessage(BMessage *msg, BHandler *target) override;
   bool QuitRequested() override;
 
 private:
   void _BuildUI();
+  /** The disc's name, track count and length, above the album fields. */
+  void _UpdateDiscInfo();
   void _LoadTracks();
   void _ApplySettings();
   void _ReadControls();
@@ -78,6 +89,17 @@ private:
   void _CheckAllTracks(bool checked);
   /** Shows all, none or mixed in the "All tracks" box. */
   void _UpdateAllCheck();
+
+  /** Edits track @p index's Title or Artist cell (kColTitle, kColArtist). */
+  void _StartEdit(int32 index, int32 column);
+  /** Ends the edit; @p move is +1/-1 to edit the next/previous cell. */
+  void _FinishEdit(bool commit, int32 move);
+  /** The album fields into every track; @p save also names the disc. */
+  void _ApplyAlbumFields(bool save);
+  /** Names track @p index on the disc: file name and attributes. */
+  status_t _SaveTrackToDisc(int32 index);
+  /** Names the disc itself ("Album artist - Album") if the album changed. */
+  void _SaveAlbumToDisc();
 
   void _UpdatePreview();
   void _ChooseFolder();
@@ -116,6 +138,25 @@ private:
   bigtime_t fRipStarted = 0;            ///< 0 when no rip is running.
   BString fPercentText;                 ///< The progress bar's "45%".
   BMessageRunner *fTicker = nullptr;    ///< kMsgTick while ripping.
+
+  // Editing names. fTitleFromFile: the title is the file name of a disc
+  // nobody named ("Track 01"), not to be written back as a real title.
+  std::vector<bool> fTitleFromFile;
+  bool fAlbumDirty = false;      ///< Album fields edited, not saved yet.
+  BString fAlbumArtist;          ///< As last applied to the tracks.
+  CellEditor *fEditor = nullptr; ///< The cell being edited, if any.
+  int32 fEditIndex = -1;
+  int32 fEditColumn = -1;
+  bigtime_t fEditRequested = 0;  ///< When a click asked to edit a cell.
+  bigtime_t fLastInvoke = 0;     ///< When a double click last played.
+  BMessageRunner *fEditDelay = nullptr;
+  uint32 fSavedFlags = 0;        ///< Window flags before the edit.
+  /** Mount points the disc had before it was renamed here. */
+  std::vector<BString> fFormerDiscPaths;
+  BTextControl *fAlbumArtistControl = nullptr;
+  BTextControl *fAlbumControl = nullptr;
+  BTextControl *fYearControl = nullptr;   ///< Empty = no year.
+  BTextControl *fGenreControl = nullptr;  ///< Empty = no genre.
 
   BStringView *fDiscInfo = nullptr;
   BColumnListView *fTrackList = nullptr;
