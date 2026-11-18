@@ -1,3 +1,9 @@
+/*
+ * Copyright 2005-2026, Daniel Weber.
+ * Copyright 2026, David Beckman.
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
 #include "MainWindow.h"
 #include "ArtworkController.h"
 #include "MediaTableView.h"
@@ -43,6 +49,7 @@
 
 #include <AboutWindow.h>
 #include <Alert.h>
+#include <AppFileInfo.h>
 #include <Autolock.h>
 #include <Button.h>
 #include <ColumnTypes.h>
@@ -170,6 +177,32 @@ bool MainWindow::_HandleMetadataMessage(BMessage *msg) {
 
 void MainWindow::_ShowAboutWindow() {
   BAboutWindow *about = new BAboutWindow("Beton", "application/x-vnd.Beton");
+
+  // Take the version from the binary that is actually running.
+  //
+  // Left to itself, BAboutWindow resolves the version through
+  // be_roster->FindApp(signature) (AboutView::_GetVersionFromSignature), which
+  // consults the MIME database's app hint (META:PPATH) and only falls back to a
+  // cross-volume query. Nothing validates that the hint still points at this
+  // binary, so with another Beton on any mounted volume -- a second install, an
+  // old build tree -- the About box reports THAT one's version. Observed on a
+  // machine with a dev volume mounted: an installed 1.3.1 reported "Version 1.2"
+  // from a stale build's app_version resource. GetAppInfo() gives us our own
+  // entry_ref directly, with no signature lookup to go wrong.
+  app_info info;
+  if (be_app->GetAppInfo(&info) == B_OK) {
+    BFile file(&info.ref, B_READ_ONLY);
+    BAppFileInfo appFileInfo;
+    version_info version;
+    if (file.InitCheck() == B_OK && appFileInfo.SetTo(&file) == B_OK &&
+        appFileInfo.GetVersionInfo(&version, B_APP_VERSION_KIND) == B_OK) {
+      BString versionString;
+      versionString << B_TRANSLATE("Version") << " " << version.major << "."
+                    << version.middle << "." << version.minor;
+      about->SetVersion(versionString.String());
+    }
+  }
+
   about->AddCopyright(2025, "Daniel Weber");
   about->AddDescription("A music library manager and player for Haiku.\n\n"
                         "Solid grey and cold\nYet it vibrates with the "
@@ -231,6 +264,70 @@ bool MainWindow::_HandleAppCommandMessage(BMessage *msg) {
     break;
   }
 
+  case MSG_SIDEBAR_FOLDERS:
+    _SendSidebarFolders();
+    break;
+
+  case MSG_LIBRARY_REMOVE:
+    // From the menu it means the selection; Redo sends the paths.
+    if (msg->HasString("path"))
+      fLibraryController->RemovePathsFromLibrary(msg);
+    else
+      fLibraryController->RemoveSelectedFromLibrary();
+    break;
+
+  case MSG_LIBRARY_RESTORE:
+    fLibraryController->RestoreToLibrary(msg);
+    break;
+
+  case MSG_PLAYLIST_SAVED: {
+    std::vector<BString> paths;
+    BString path;
+    for (int32 i = 0; msg->FindString("path", i, &path) == B_OK; i++)
+      paths.push_back(path);
+    fLibraryController->AddPlaylistTracks(paths);
+    break;
+  }
+
+  case MSG_REMOVE_MISSING:
+    fLibraryController->RemoveMissingTracks();
+    break;
+
+  case MSG_ADD_TO_LIBRARY:
+    fLibraryController->ShowAddToLibraryPanel();
+    break;
+
+  case MSG_ADD_TO_LIBRARY_REFS:
+    fLibraryController->AddRefsToLibrary(msg);
+    break;
+
+  case MSG_DROP_INTO_FOLDER:
+    fLibraryController->DropIntoFolder(msg);
+    break;
+
+  case MSG_PASTE_INTO_FOLDER: {
+    BString folder;
+    if (msg->FindString("folder", &folder) == B_OK)
+      fLibraryController->PasteIntoFolder(folder);
+    break;
+  }
+
+  case MSG_PASTE_FILES: {
+    // The menu shortcut took Alt+V from text fields; give it back.
+    if (auto *text = dynamic_cast<BTextView *>(CurrentFocus())) {
+      PostMessage(B_PASTE, text);
+      break;
+    }
+    if (fIsFolderMode && fPlaylistLibrary)
+      fLibraryController->PasteIntoFolder(
+          fPlaylistLibrary->FolderPathForName(fCurrentPlaylistName));
+    break;
+  }
+
+  case MSG_FOLDER_COPY_DONE:
+    fLibraryController->FolderCopyDone(msg);
+    break;
+
   case B_CONTROL_INVOKED: {
     _HandleControlInvoked(msg);
     break;
@@ -279,6 +376,13 @@ void MainWindow::MenusBeginning() {
     fUndoItem->SetEnabled(fUndoManager && fUndoManager->CanUndo());
   if (fRedoItem)
     fRedoItem->SetEnabled(fUndoManager && fUndoManager->CanRedo());
+  if (fPasteItem)
+    fPasteItem->SetEnabled(
+        dynamic_cast<BTextView *>(CurrentFocus()) != nullptr ||
+        (fIsFolderMode && LibraryController::ClipboardHasFiles()));
+  // Read-only sources: switching Fast Edit on would make their rows editable.
+  if (fFastEditItem)
+    fFastEditItem->SetEnabled(!fIsRadioMode && !fIsDlnaMode && !fIsCDMode);
 }
 
 void MainWindow::_HandleControlInvoked(BMessage *msg) {
@@ -487,6 +591,9 @@ MainWindow::MainWindow()
   RegisterWithMediaLibraryCache();
 
   LoadSettings();
+  // Before any scan the window asks for: the cache needs the sidebar's
+  // folders to tell their tracks from the rest.
+  _SendSidebarFolders();
 
   BMessage msg(MSG_INIT_LIBRARY);
   PostMessage(&msg);
@@ -542,6 +649,10 @@ MainWindow::MainWindow()
  */
 MainWindow::~MainWindow() {
   fShuttingDown.store(true, std::memory_order_relaxed);
+  delete fCDRescanRunner;
+  fCDRescanRunner = nullptr;
+  delete fGainPrefetchRunner;
+  fGainPrefetchRunner = nullptr;
   if (fRadioStationController)
     fRadioStationController->CancelQueuedPlay();
   if (fPlaybackEngine)
@@ -634,10 +745,15 @@ void MainWindow::_BuildUI() {
   fMenuBar->SetViewColor(ui_color(B_PANEL_BACKGROUND_COLOR));
 
   BMenu *fileMenu = new BMenu(B_TRANSLATE("File"));
+  fileMenu->AddItem(new BMenuItem(B_TRANSLATE("Add to Library" B_UTF8_ELLIPSIS),
+                                  new BMessage(MSG_ADD_TO_LIBRARY)));
   fileMenu->AddItem(new BMenuItem(B_TRANSLATE("Manage Music Folders"),
                                   new BMessage(MSG_MANAGE_DIRECTORIES)));
   fileMenu->AddItem(
       new BMenuItem(B_TRANSLATE("Rescan"), new BMessage(MSG_RESCAN_FULL)));
+
+  fileMenu->AddItem(new BMenuItem(B_TRANSLATE("Remove Missing Tracks"),
+                                  new BMessage(MSG_REMOVE_MISSING)));
 
   fileMenu->AddItem(new BMenuItem(B_TRANSLATE("Synchronize Metadata"),
                                   new BMessage(MSG_SYNC_SMART)));
@@ -655,6 +771,11 @@ void MainWindow::_BuildUI() {
   fRedoItem->SetEnabled(false);
   editMenu->AddItem(fUndoItem);
   editMenu->AddItem(fRedoItem);
+  editMenu->AddSeparatorItem();
+  // Takes over Alt+V, so text fields get it passed on (MSG_PASTE_FILES).
+  fPasteItem = new BMenuItem(B_TRANSLATE("Paste"),
+                             new BMessage(MSG_PASTE_FILES), 'V');
+  editMenu->AddItem(fPasteItem);
   editMenu->AddSeparatorItem();
   fFastEditItem = new BMenuItem(B_TRANSLATE("Enable Fast Edit"),
                                 new BMessage(MSG_TOGGLE_FAST_EDIT), 'E');
@@ -701,6 +822,38 @@ void MainWindow::_BuildUI() {
   fLocalOutputSettingsMenuItem = new BMenuItem(fLocalOutputSettingsMenu);
   fSettingsMenu->AddItem(fLocalOutputSettingsMenuItem);
 #endif
+
+  // Values are AudioPlaybackEngine::ReplayGainMode.
+  fReplayGainMenu = new BMenu(B_TRANSLATE("ReplayGain"));
+  const struct {
+    int32 mode;
+    const char *label;
+  } replayGainModes[] = {
+      {AudioPlaybackEngine::kReplayGainAuto,
+       B_TRANSLATE("Auto (album when played in order)")},
+      {AudioPlaybackEngine::kReplayGainTrack, B_TRANSLATE("Track")},
+      {AudioPlaybackEngine::kReplayGainAlbum, B_TRANSLATE("Album")},
+      {AudioPlaybackEngine::kReplayGainOff, B_TRANSLATE("Off")},
+  };
+  for (const auto &m : replayGainModes) {
+    BMessage *msg = new BMessage(MSG_REPLAYGAIN_MODE);
+    msg->AddInt32("mode", m.mode);
+    BMenuItem *item = new BMenuItem(m.label, msg);
+    item->SetMarked(m.mode == AudioPlaybackEngine::kReplayGainAuto);
+    fReplayGainMenu->AddItem(item);
+  }
+  fReplayGainMenu->AddSeparatorItem();
+  fGainPrefetchItem =
+      new BMenuItem(B_TRANSLATE("Measure tracks without gain while playing"),
+                    new BMessage(MSG_GAIN_PREFETCH_TOGGLE));
+  fGainPrefetchItem->SetMarked(fGainPrefetch);
+  fReplayGainMenu->AddItem(fGainPrefetchItem);
+  fGainWriteItem =
+      new BMenuItem(B_TRANSLATE("Save measured gain in the files"),
+                    new BMessage(MSG_GAIN_WRITE_TOGGLE));
+  fGainWriteItem->SetMarked(fGainWriteFiles);
+  fReplayGainMenu->AddItem(fGainWriteItem);
+  fSettingsMenu->AddItem(fReplayGainMenu);
   fSettingsMenu->AddSeparatorItem();
 
   BMenu *sidebarMenu = new BMenu(B_TRANSLATE("Sidebar"));
@@ -998,7 +1151,25 @@ void MainWindow::MessageReceived(BMessage *msg) {
         _CheckMountedCDs();
         return;
       }
+      // Entries renamed in "/" (a CD's mount point) or on a CD (its tracks):
+      // Haiku's online CD lookup renames both a few seconds after mounting.
+      int32 device = -1;
+      msg->FindInt32("device", &device);
+      if ((opcode == B_ENTRY_MOVED || opcode == B_ENTRY_CREATED ||
+           opcode == B_ENTRY_REMOVED) &&
+          (device == fRootDevice ||
+           fCDDevicePaths.find(device) != fCDDevicePaths.end())) {
+        _ScheduleCDRescan();
+        return;
+      }
     }
+  }
+  if (msg->what == MSG_CD_RESCAN) {
+    delete fCDRescanRunner;
+    fCDRescanRunner = nullptr;
+    _CheckMountedCDs();
+    _ReloadShownCD();
+    return;
   }
 
   if (_HandleViewMessage(msg))
@@ -1120,6 +1291,13 @@ void MainWindow::UpdateFilteredViews(bool preserveScroll) {
     if (!fIsRadioMode && !fIsDlnaMode) {
       if (fStatusBarController)
         fStatusBarController->UpdateLibraryStatus();
+      // Measure the new rows on screen without waiting for the next tick.
+      // Posted, so it reads the rows once the list has been laid out.
+      if (!preserveScroll) {
+        BMessage tick(MSG_GAIN_PREFETCH_TICK);
+        tick.AddBool("list_changed", true);
+        PostMessage(&tick);
+      }
     }
   }
 }
@@ -1318,6 +1496,20 @@ void MainWindow::SaveSettings() {
 /**
  * @brief Loads UI state from settings file.
  */
+void MainWindow::SetReplayGainMode(int32 mode) {
+  if (fPlaybackEngine)
+    fPlaybackEngine->SetReplayGainMode(mode);
+  if (fReplayGainMenu == nullptr)
+    return;
+  for (int32 i = 0; BMenuItem *item = fReplayGainMenu->ItemAt(i); i++) {
+    // The mode items; the menu also holds the measuring check items.
+    int32 itemMode;
+    if (item->Message() != nullptr &&
+        item->Message()->FindInt32("mode", &itemMode) == B_OK)
+      item->SetMarked(itemMode == mode);
+  }
+}
+
 void MainWindow::LoadSettings() {
   if (fSettingsController)
     fSettingsController->LoadSettings();
@@ -1419,9 +1611,48 @@ void MainWindow::ApplyColors() {
   }
 }
 
+void MainWindow::_SendSidebarFolders() {
+  if (!fMediaLibraryCache || !fPlaylistLibrary)
+    return;
+  BMessage folders(MSG_SIDEBAR_FOLDERS);
+  for (const BString &path : fPlaylistLibrary->FolderSourcePaths())
+    folders.AddString("path", path);
+  BMessenger(fMediaLibraryCache).SendMessage(&folders);
+}
+
 void MainWindow::_InitCDVolumeMonitoring() {
+  // Also starts the gain prefetcher's timer: it looks for tracks to measure
+  // every two seconds, which follows track changes and scrolling closely
+  // enough without watching for either.
+  BMessage tick(MSG_GAIN_PREFETCH_TICK);
+  fGainPrefetchRunner =
+      new BMessageRunner(BMessenger(this), &tick, 2000000);
+
   fVolumeRoster.StartWatching(BMessenger(this));
+  // Mount points live in "/"; renaming a volume renames its mount point.
+  BEntry root("/");
+  node_ref rootRef;
+  if (root.GetNodeRef(&rootRef) == B_OK) {
+    fRootDevice = rootRef.device;
+    watch_node(&rootRef, B_WATCH_DIRECTORY, BMessenger(this));
+  }
   _CheckMountedCDs();
+}
+
+void MainWindow::_ScheduleCDRescan() {
+  // Wait for a burst of renames (one per track) to finish.
+  delete fCDRescanRunner;
+  BMessage rescan(MSG_CD_RESCAN);
+  fCDRescanRunner = new BMessageRunner(BMessenger(this), &rescan, 500000, 1);
+}
+
+void MainWindow::_ReloadShownCD() {
+  if (!fIsCDMode || !fPlaylistLibrary || !fPlaylistLibrary->View())
+    return;
+  PlaylistSidebarView *sidebar = fPlaylistLibrary->View();
+  const int32 selected = sidebar->CurrentSelection();
+  if (selected >= 0 && sidebar->KindAt(selected) == PlaylistItemKind::CD)
+    sidebar->SelectionChanged(selected);
 }
 
 void MainWindow::_CheckMountedCDs() {
@@ -1430,12 +1661,17 @@ void MainWindow::_CheckMountedCDs() {
   roster.Rewind();
 
   std::vector<CDItemInfo> mountedCDs;
+  std::vector<dev_t> devices;
 
   while (roster.GetNextVolume(&vol) == B_OK) {
     fs_info info;
     if (fs_stat_dev(vol.Device(), &info) == B_OK && strcmp(info.fsh_name, "cdda") == 0) {
       BDirectory rootDir;
       if (vol.GetRootDirectory(&rootDir) == B_OK) {
+        // Track files get renamed too once the disc has been looked up.
+        node_ref discRef;
+        if (rootDir.GetNodeRef(&discRef) == B_OK)
+          watch_node(&discRef, B_WATCH_DIRECTORY, BMessenger(this));
         BEntry rootEntry;
         rootDir.GetEntry(&rootEntry);
         BPath rootPath;
@@ -1496,10 +1732,26 @@ void MainWindow::_CheckMountedCDs() {
           }
 
           mountedCDs.push_back({label, cdPath});
+          devices.push_back(vol.Device());
         }
       }
     }
   }
+
+  // A disc renamed since the last scan keeps its sidebar row (and stays
+  // selected) instead of looking like one disc ejected and another inserted.
+  std::map<dev_t, BString> paths;
+  for (size_t i = 0; i < mountedCDs.size(); i++) {
+    paths[devices[i]] = mountedCDs[i].path;
+    auto old = fCDDevicePaths.find(devices[i]);
+    if (old == fCDDevicePaths.end() || old->second == mountedCDs[i].path)
+      continue;
+    if (fPlaylistLibrary && fPlaylistLibrary->View())
+      fPlaylistLibrary->View()->RenameCDPath(old->second, mountedCDs[i].path);
+    if (fCDPath == old->second)
+      fCDPath = mountedCDs[i].path;
+  }
+  fCDDevicePaths = paths;
 
   if (fPlaylistLibrary && fPlaylistLibrary->View()) {
     fPlaylistLibrary->View()->SyncCDItems(mountedCDs);

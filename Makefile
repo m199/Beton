@@ -1,3 +1,7 @@
+# Copyright 2005-2026, Daniel Weber.
+# Copyright 2026, David Beckman.
+# All rights reserved. Distributed under the terms of the MIT License.
+
 NAME = Beton
 TYPE = APP
 APP_MIME_SIG = application/x-vnd.Beton
@@ -12,6 +16,8 @@ SRCS = \
     app/UndoManager.cpp \
     audio/AudioOutputManager.cpp \
     audio/AudioResampler.cpp \
+    audio/LoudnessAnalyzer.cpp \
+    audio/LoudnessMeter.cpp \
     audio/OutputViewController.cpp \
     artwork/ArtworkController.cpp \
     dlna/DLNAMessageHandler.cpp \
@@ -20,6 +26,9 @@ SRCS = \
     library/MediaLibraryCache.cpp \
     library/LibraryMessageHandler.cpp \
     library/LibraryController.cpp \
+    library/LibraryFolderDrop.cpp \
+    library/GainPrefetcher.cpp \
+    library/GainStore.cpp \
     library/LibraryBrowserController.cpp \
     library/MediaLibraryScanner.cpp \
     library/MusicSourceSettings.cpp \
@@ -48,6 +57,14 @@ SRCS = \
     radio/RadioStationController.cpp \
     radio/RadioStationLibrary.cpp \
     radio/RadioStationEditorDialog.cpp \
+    ripping/AccurateRip.cpp \
+    ripping/CddaTracks.cpp \
+    ripping/CdDriveReader.cpp \
+    ripping/CDRipper.cpp \
+    ripping/CDRipSettings.cpp \
+    ripping/CDRipWindow.cpp \
+    ripping/FFmpegAudioEncoder.cpp \
+    ripping/RipNamePattern.cpp \
     settings/SettingsController.cpp \
     sync/SyncMessageHandler.cpp \
     sync/MetadataSyncConflictDialog.cpp \
@@ -80,6 +97,7 @@ LOCAL_INCLUDE_PATHS = \
     playback \
     playlist \
     radio \
+    ripping \
     settings \
     sync \
     ui

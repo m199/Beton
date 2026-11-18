@@ -1,3 +1,9 @@
+/*
+ * Copyright 2005-2026, Daniel Weber.
+ * Copyright 2026, David Beckman.
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
 #include "LibraryBrowserController.h"
 #include "MediaTableView.h"
 #include "Debug.h"
@@ -117,6 +123,9 @@ LibraryBrowserController::LibraryBrowserController(BMessenger target) : fTarget(
   fAlbumView = new SingleColumnListView("album");
   fAlbumView->SetSelectionMessage(MSG_SELECTION_CHANGED_ALBUM);
   fAlbumView->SetTarget(fTarget);
+  fGenreView->SetMultipleSelection(true);
+  fArtistView->SetMultipleSelection(true);
+  fAlbumView->SetMultipleSelection(true);
 
   fContentView = new MediaTableView("content");
 }
@@ -198,31 +207,54 @@ void LibraryBrowserController::UpdateActiveItem(const MediaItem &item) {
     }
 }
 
-/**
- * @brief Returns selected display text from a filter view.
- */
-BString LibraryBrowserController::SelectedText(SingleColumnListView *v) {
-  if (!v)
-    return "";
-  int32 sel = v->CurrentSelection();
-  if (sel >= 0) {
-    return v->ItemAt(sel);
-  }
-  return "";
+std::vector<BString>
+LibraryBrowserController::SelectedTexts(SingleColumnListView *v) {
+  std::vector<BString> out;
+  for (int32 i = 0; v && i < v->CountItems(); i++)
+    if (v->IsSelected(i))
+      out.push_back(v->ItemAt(i));
+  return out;
 }
 
-/**
- * @brief Returns selected hidden data/path from a filter view.
- */
-BString LibraryBrowserController::SelectedData(SingleColumnListView *v) {
-  if (!v)
-    return "";
-  int32 sel = v->CurrentSelection();
-  if (sel >= 0) {
-    return v->PathAt(sel);
-  }
-  return "";
+std::vector<BString>
+LibraryBrowserController::SelectedDatas(SingleColumnListView *v) {
+  std::vector<BString> out;
+  for (int32 i = 0; v && i < v->CountItems(); i++)
+    if (v->IsSelected(i))
+      out.push_back(v->PathAt(i));
+  return out;
 }
+
+namespace {
+
+/** A tag value as the filters list and match it: without the white space
+ *  around it. Old ID3 tags pad names with spaces, and "Maroon 5" padded with
+ *  5 and with 23 spaces were Artist entries of their own, each with one
+ *  track (2026-11-17). Only the filters see this; the item keeps its value. */
+BString FilterValue(const BString &value) {
+  BString trimmed(value);
+  trimmed.Trim();
+  return trimmed;
+}
+
+bool Contains(const std::vector<BString> &list, const BString &value) {
+  return std::find(list.begin(), list.end(), value) != list.end();
+}
+
+/** Whether @p value passes a filter with @p selected items: nothing or
+ *  "Show all" selected passes everything, "No ..." an empty value. */
+bool PassesFilter(const std::vector<BString> &selected,
+                  const BString &allLabel, const BString &noLabel,
+                  const BString &value) {
+  if (selected.empty() || Contains(selected, allLabel))
+    return true;
+  BString trimmed = FilterValue(value);
+  if (trimmed.IsEmpty())
+    return Contains(selected, noLabel);
+  return Contains(selected, trimmed);
+}
+
+} // namespace
 
 /**
  * @brief Resets all filters and clears the content view.
@@ -321,17 +353,19 @@ void LibraryBrowserController::UpdateFilteredViews(
   /// 1. Save state for previous context if changed
   if (!fCurrentContext.IsEmpty() && fCurrentContext != currentContext) {
     FilterState &state = fSavedStates[fCurrentContext];
-    state.genre = SelectedText(fGenreView);
-    state.artist = SelectedText(fArtistView);
-    state.album = SelectedText(fAlbumView);
+    state.genre = SelectedTexts(fGenreView);
+    state.artist = SelectedTexts(fArtistView);
+    state.album = SelectedTexts(fAlbumView);
+    state.albumData = SelectedDatas(fAlbumView);
     state.sortState.MakeEmpty();
     if (fContentView)
       fContentView->SaveSortState(&state.sortState);
   }
 
-  BString selGenre = SelectedText(fGenreView);
-  BString selArtist = SelectedText(fArtistView);
-  BString selAlbum = SelectedText(fAlbumView);
+  std::vector<BString> selGenre = SelectedTexts(fGenreView);
+  std::vector<BString> selArtist = SelectedTexts(fArtistView);
+  std::vector<BString> selAlbum = SelectedTexts(fAlbumView);
+  std::vector<BString> selAlbumData = SelectedDatas(fAlbumView);
 
   /// 2. Restore state for new context if changing contexts or on first update
   bool contextChanged = (fCurrentContext != currentContext);
@@ -343,14 +377,16 @@ void LibraryBrowserController::UpdateFilteredViews(
       selGenre = state.genre;
       selArtist = state.artist;
       selAlbum = state.album;
+      selAlbumData = state.albumData;
 
       if (fContentView && !state.sortState.IsEmpty())
         fContentView->RestoreSortState(&state.sortState);
     } else {
       /// No saved state for this context, default to empty/all
-      selGenre = "";
-      selArtist = "";
-      selAlbum = "";
+      selGenre.clear();
+      selArtist.clear();
+      selAlbum.clear();
+      selAlbumData.clear();
     }
 
     fLastSelectedGenre = selGenre;
@@ -365,10 +401,12 @@ void LibraryBrowserController::UpdateFilteredViews(
 
   /// Reset downstream selections if upstream selection changed
   if (selGenre != fLastSelectedGenre) {
-    selArtist = "";
-    selAlbum = "";
+    selArtist.clear();
+    selAlbum.clear();
+    selAlbumData.clear();
   } else if (selArtist != fLastSelectedArtist) {
-    selAlbum = "";
+    selAlbum.clear();
+    selAlbumData.clear();
   }
 
   fLastSelectedGenre = selGenre;
@@ -455,44 +493,38 @@ void LibraryBrowserController::UpdateFilteredViews(
   /// -- Filter Lambdas --
 
   auto genreOK = [&](const MediaItem &i) {
-    if (selGenre.IsEmpty() || selGenre == kLabelAllGenre)
-      return true;
-    if (selGenre == kLabelNoGenre)
-      return i.genre.IsEmpty();
-    return i.genre == selGenre;
+    return PassesFilter(selGenre, kLabelAllGenre, kLabelNoGenre, i.genre);
   };
 
   auto artistOK = [&](const MediaItem &i) {
-    if (selArtist.IsEmpty() || selArtist == kLabelAllArtist)
-      return true;
-    if (selArtist == kLabelNoArtist)
-      return i.artist.IsEmpty();
-    return i.artist == selArtist;
+    return PassesFilter(selArtist, kLabelAllArtist, kLabelNoArtist, i.artist);
   };
 
-  BString selAlbumData = SelectedData(fAlbumView);
-
   auto albumOK = [&](const MediaItem &i) {
-    if (selAlbum.IsEmpty() || selAlbum == kLabelAllAlbum)
+    if (selAlbum.empty() || Contains(selAlbum, kLabelAllAlbum))
       return true;
-    if (selAlbum == kLabelNoAlbum)
-      return i.album.IsEmpty();
+    const BString album = FilterValue(i.album);
+    if (album.IsEmpty())
+      return Contains(selAlbum, kLabelNoAlbum);
 
-    /// Check against hidden data if available
-    if (!selAlbumData.IsEmpty()) {
-      if (AlbumIdentityForItem(i, fIsRadioFilterMode) == selAlbumData)
+    for (size_t k = 0; k < selAlbum.size(); k++) {
+      const BString data =
+          k < selAlbumData.size() ? selAlbumData[k] : BString();
+      /// Check against hidden data if available
+      if (!data.IsEmpty()) {
+        if (AlbumIdentityForItem(i, fIsRadioFilterMode) == data)
+          return true;
+        BString legacyData = i.album;
+        legacyData << "|" << i.year << "|" << i.base;
+        if (legacyData == data)
+          return true;
+        continue;
+      }
+      /// Standard album name match
+      if (album == selAlbum[k])
         return true;
-
-      BString legacyData = i.album;
-      legacyData << "|" << i.year << "|" << i.base;
-      return legacyData == selAlbumData;
     }
-
-    /// Standard album name match
-    if (i.album != selAlbum)
-      return false;
-
-    return true;
+    return false;
   };
 
   auto textOK = [&](const MediaItem &i) {
@@ -512,22 +544,25 @@ void LibraryBrowserController::UpdateFilteredViews(
     if (!textOK(it))
       continue;
 
-    if (it.genre.IsEmpty())
+    const BString genre = FilterValue(it.genre);
+    if (genre.IsEmpty())
       hasUntaggedGenreSrc = true;
     else
-      allGenres.insert(it.genre);
+      allGenres.insert(genre);
 
     if (genreOK(it)) {
-      if (it.artist.IsEmpty())
+      const BString artist = FilterValue(it.artist);
+      if (artist.IsEmpty())
         hasUntaggedArtistForGenre = true;
       else
-        artistsForGenre.insert(it.artist);
+        artistsForGenre.insert(artist);
 
       if (artistOK(it)) {
-        if (it.album.IsEmpty())
+        const BString album = FilterValue(it.album);
+        if (album.IsEmpty())
           hasUntaggedAlbumForGA = true;
         else {
-          albumsForGA[it.album].insert(
+          albumsForGA[album].insert(
               {it.year, AlbumIdentityForItem(it, fIsRadioFilterMode)});
         }
       }
@@ -668,7 +703,8 @@ void LibraryBrowserController::UpdateFilteredViews(
 
   auto smartUpdateWithData =
       [&](SingleColumnListView *view, const std::vector<DisplayItem> &newItems,
-          const BString &currentSelText, const BString &currentSelData) {
+          const std::vector<BString> &selTexts,
+          const std::vector<BString> &selDatas) {
         bool changed = false;
         if (view->CountItems() != (int32)newItems.size()) {
           changed = true;
@@ -682,43 +718,44 @@ void LibraryBrowserController::UpdateFilteredViews(
           }
         }
 
-        if (!changed)
+        if (changed) {
+          std::vector<std::pair<BString, BString>> bulk;
+          bulk.reserve(newItems.size());
+          for (const auto &item : newItems) {
+            bulk.push_back({item.text, item.data});
+          }
+          view->SetItems(bulk);
+        }
+
+        /// Restore the selection: by hidden data first (more precise), else
+        /// by text. Also when the list is unchanged, so a reset downstream
+        /// selection shows as reset.
+        std::vector<bool> want(view->CountItems(), false);
+        for (size_t k = 0; k < selTexts.size(); k++) {
+          const BString data = k < selDatas.size() ? selDatas[k] : BString();
+          int32 match = -1;
+          for (int32 i = 0; !data.IsEmpty() && i < view->CountItems(); i++)
+            if (view->PathAt(i) == data) {
+              match = i;
+              break;
+            }
+          for (int32 i = 0; match < 0 && i < view->CountItems(); i++)
+            if (view->ItemAt(i) == selTexts[k])
+              match = i;
+          if (match >= 0)
+            want[match] = true;
+        }
+        bool differs = false;
+        for (int32 i = 0; i < view->CountItems() && !differs; i++)
+          differs = want[i] != view->IsSelected(i);
+        if (!differs)
           return;
-
-        std::vector<std::pair<BString, BString>> bulk;
-        bulk.reserve(newItems.size());
-        for (const auto &item : newItems) {
-          bulk.push_back({item.text, item.data});
-        }
-        view->SetItems(bulk);
-
-        /// Restore Selection
-        if (!currentSelText.IsEmpty()) {
-          bool found = false;
-
-          /// Try matching by data first (more precise)
-          if (!currentSelData.IsEmpty()) {
-            for (int32 i = 0; i < view->CountItems(); i++) {
-              if (view->PathAt(i) == currentSelData) {
-                view->Select(i);
-                view->ScrollToSelection();
-                found = true;
-                break;
-              }
-            }
-          }
-
-          /// Fallback to text match
-          if (!found) {
-            for (int32 i = 0; i < view->CountItems(); i++) {
-              if (view->ItemAt(i) == currentSelText) {
-                view->Select(i);
-                view->ScrollToSelection();
-                break;
-              }
-            }
-          }
-        }
+        view->DeselectAll();
+        for (int32 i = 0; i < view->CountItems(); i++)
+          if (want[i])
+            view->Select(i, true);
+        if (changed)
+          view->ScrollToSelection();
       };
 
   auto toDisplay = [](const std::vector<BString> &strs) {
@@ -728,8 +765,8 @@ void LibraryBrowserController::UpdateFilteredViews(
     return out;
   };
 
-  smartUpdateWithData(fGenreView, toDisplay(genreItems), selGenre, "");
-  smartUpdateWithData(fArtistView, toDisplay(artistItems), selArtist, "");
+  smartUpdateWithData(fGenreView, toDisplay(genreItems), selGenre, {});
+  smartUpdateWithData(fArtistView, toDisplay(artistItems), selArtist, {});
   smartUpdateWithData(fAlbumView, albumDisplayItems, selAlbum, selAlbumData);
 
   bigtime_t tSmartEnd = system_time();
@@ -750,7 +787,8 @@ void LibraryBrowserController::AddMediaItem(const MediaItem &item) {
 
   auto addUnique = [](SingleColumnListView *v, const BString &val,
                       const char *emptyLabel) {
-    BString text = val.IsEmpty() ? BString(emptyLabel) : val;
+    BString trimmed = FilterValue(val);
+    BString text = trimmed.IsEmpty() ? BString(emptyLabel) : trimmed;
 
     for (int32 i = 0; i < v->CountItems(); i++) {
       if (v->ItemAt(i) == text)
@@ -761,19 +799,15 @@ void LibraryBrowserController::AddMediaItem(const MediaItem &item) {
 
   addUnique(fGenreView, item.genre, kLabelNoGenre.String());
 
-  BString selGenre = SelectedText(fGenreView);
-  bool genreMatch = (selGenre.IsEmpty() || selGenre == kLabelAllGenre ||
-                     (selGenre == kLabelNoGenre && item.genre.IsEmpty()) ||
-                     selGenre == item.genre);
+  bool genreMatch = PassesFilter(SelectedTexts(fGenreView), kLabelAllGenre,
+                                 kLabelNoGenre, item.genre);
 
   if (genreMatch) {
     addUnique(fArtistView, item.artist, kLabelNoArtist.String());
 
-    BString selArtist = SelectedText(fArtistView);
-    bool artistMatch =
-        (selArtist.IsEmpty() || selArtist == kLabelAllArtist ||
-         (selArtist == kLabelNoArtist && item.artist.IsEmpty()) ||
-         selArtist == item.artist);
+    bool artistMatch = PassesFilter(SelectedTexts(fArtistView),
+                                    kLabelAllArtist, kLabelNoArtist,
+                                    item.artist);
 
     if (artistMatch) {
       addUnique(fAlbumView, item.album, kLabelNoAlbum.String());
@@ -796,9 +830,10 @@ void LibraryBrowserController::SaveSettings(BMessage *msg) {
   /// Sync current UI into map before saving
   if (!fCurrentContext.IsEmpty()) {
     FilterState &state = fSavedStates[fCurrentContext];
-    state.genre = SelectedText(fGenreView);
-    state.artist = SelectedText(fArtistView);
-    state.album = SelectedText(fAlbumView);
+    state.genre = SelectedTexts(fGenreView);
+    state.artist = SelectedTexts(fArtistView);
+    state.album = SelectedTexts(fAlbumView);
+    state.albumData = SelectedDatas(fAlbumView);
     state.sortState.MakeEmpty();
     if (fContentView)
       fContentView->SaveSortState(&state.sortState);
@@ -807,12 +842,14 @@ void LibraryBrowserController::SaveSettings(BMessage *msg) {
   for (const auto &pair : fSavedStates) {
     BMessage stateMsg;
     stateMsg.AddString("context", pair.first);
-    if (!pair.second.genre.IsEmpty())
-      stateMsg.AddString("genre", pair.second.genre);
-    if (!pair.second.artist.IsEmpty())
-      stateMsg.AddString("artist", pair.second.artist);
-    if (!pair.second.album.IsEmpty())
-      stateMsg.AddString("album", pair.second.album);
+    for (const BString &s : pair.second.genre)
+      stateMsg.AddString("genre", s);
+    for (const BString &s : pair.second.artist)
+      stateMsg.AddString("artist", s);
+    for (const BString &s : pair.second.album)
+      stateMsg.AddString("album", s);
+    for (const BString &s : pair.second.albumData)
+      stateMsg.AddString("album_data", s);
     if (!pair.second.sortState.IsEmpty())
       stateMsg.AddMessage("sort", &pair.second.sortState);
     msg->AddMessage("filter_state", &stateMsg);
@@ -837,9 +874,15 @@ void LibraryBrowserController::LoadSettings(const BMessage *msg) {
     BString ctx;
     if (stateMsg.FindString("context", &ctx) == B_OK) {
       FilterState state;
-      stateMsg.FindString("genre", &state.genre);
-      stateMsg.FindString("artist", &state.artist);
-      stateMsg.FindString("album", &state.album);
+      auto readAll = [&](const char *name, std::vector<BString> &out) {
+        BString s;
+        for (int32 k = 0; stateMsg.FindString(name, k, &s) == B_OK; k++)
+          out.push_back(s);
+      };
+      readAll("genre", state.genre);
+      readAll("artist", state.artist);
+      readAll("album", state.album);
+      readAll("album_data", state.albumData);
       stateMsg.FindMessage("sort", &state.sortState);
       fSavedStates[ctx] = state;
     }
@@ -848,9 +891,13 @@ void LibraryBrowserController::LoadSettings(const BMessage *msg) {
   /// Backward compatibility for old format
   if (msg->HasString("lib_genre") && fSavedStates.count("Library") == 0) {
     FilterState &libState = fSavedStates["Library"];
-    msg->FindString("lib_genre", &libState.genre);
-    msg->FindString("lib_artist", &libState.artist);
-    msg->FindString("lib_album", &libState.album);
+    BString s;
+    if (msg->FindString("lib_genre", &s) == B_OK && !s.IsEmpty())
+      libState.genre.push_back(s);
+    if (msg->FindString("lib_artist", &s) == B_OK && !s.IsEmpty())
+      libState.artist.push_back(s);
+    if (msg->FindString("lib_album", &s) == B_OK && !s.IsEmpty())
+      libState.album.push_back(s);
     msg->FindMessage("lib_sort", &libState.sortState);
   }
 }

@@ -1,3 +1,9 @@
+/*
+ * Copyright 2005-2026, Daniel Weber.
+ * Copyright 2026, David Beckman.
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
 #ifndef BETON_LIBRARY_BROWSER_CONTROLLER_H
 #define BETON_LIBRARY_BROWSER_CONTROLLER_H
 
@@ -90,15 +96,15 @@ public:
   /** @name Static Helper Methods */
   ///@{
   /**
-   * @brief Returns the currently selected display text from a filter view.
+   * @brief The display texts of the selected items of a filter view.
    * @param v Filter view pointer.
    */
-  static BString SelectedText(SingleColumnListView *v);
+  static std::vector<BString> SelectedTexts(SingleColumnListView *v);
   /**
-   * @brief Returns hidden data/path associated with selected item in a filter view.
+   * @brief The hidden data of the selected items, in the same order.
    * @param v Filter view pointer.
    */
-  static BString SelectedData(SingleColumnListView *v);
+  static std::vector<BString> SelectedDatas(SingleColumnListView *v);
 
   ///@}
 
@@ -166,13 +172,15 @@ private:
   BString fActiveFolderPath;
 
   /// Cache last selection to avoid resetting downstream columns unnecessarily
-  BString fLastSelectedGenre;
-  BString fLastSelectedArtist;
+  std::vector<BString> fLastSelectedGenre;
+  std::vector<BString> fLastSelectedArtist;
 
+  /// Each filter can have several items selected.
   struct FilterState {
-      BString genre;
-      BString artist;
-      BString album;
+      std::vector<BString> genre;
+      std::vector<BString> artist;
+      std::vector<BString> album;
+      std::vector<BString> albumData; ///< Hidden data, same order as album.
       BMessage sortState;
   };
   std::map<BString, FilterState> fSavedStates;

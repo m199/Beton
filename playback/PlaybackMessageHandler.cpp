@@ -1,10 +1,18 @@
+/*
+ * Copyright 2005-2026, Daniel Weber.
+ * Copyright 2026, David Beckman.
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
 #include "PlaybackMessageHandler.h"
 
+#include "LibraryController.h"
 #include "MainWindow.h"
 #include "Messages.h"
 #include "PlaybackTransportController.h"
 #include "PlaybackQueueManager.h"
 
+#include <MenuItem.h>
 #include <Message.h>
 
 /**
@@ -96,6 +104,38 @@ bool PlaybackMessageHandler::HandleMessage(BMessage *msg) {
     return true;
   }
 
+  case MSG_GAIN_PREFETCH_TICK:
+    if (fWindow->fLibraryController)
+      fWindow->fLibraryController->UpdateGainPrefetch(
+          msg->GetBool("list_changed", false));
+    return true;
+
+  case MSG_GAIN_PREFETCH_TOGGLE:
+  case MSG_GAIN_WRITE_TOGGLE: {
+    bool &setting = msg->what == MSG_GAIN_PREFETCH_TOGGLE
+                        ? fWindow->fGainPrefetch
+                        : fWindow->fGainWriteFiles;
+    BMenuItem *item = msg->what == MSG_GAIN_PREFETCH_TOGGLE
+                          ? fWindow->fGainPrefetchItem
+                          : fWindow->fGainWriteItem;
+    setting = !setting;
+    if (item)
+      item->SetMarked(setting);
+    if (fWindow->fLibraryController)
+      fWindow->fLibraryController->UpdateGainPrefetch();
+    fWindow->SaveSettings();
+    return true;
+  }
+
+  case MSG_REPLAYGAIN_MODE: {
+    int32 mode;
+    if (msg->FindInt32("mode", &mode) != B_OK)
+      mode = AudioPlaybackEngine::kReplayGainAuto;
+    fWindow->SetReplayGainMode(mode);
+    fWindow->SaveSettings();
+    return true;
+  }
+
   case MSG_REPEAT_TOGGLE: {
     if (fWindow->fPlaybackQueueManager)
       fWindow->fPlaybackQueueManager->ToggleRepeat();
@@ -112,6 +152,15 @@ bool PlaybackMessageHandler::HandleMessage(BMessage *msg) {
   case MSG_NOW_PLAYING: {
     if (fWindow->fPlaybackTransportController)
       fWindow->fPlaybackTransportController->HandleNowPlaying(msg);
+    // Measure a new track without gain now, not at the next tick.
+    if (fWindow->fLibraryController)
+      fWindow->fLibraryController->UpdateGainPrefetch();
+    break;
+  }
+
+  case MSG_PLAY_FAILED: {
+    if (fWindow->fPlaybackTransportController)
+      fWindow->fPlaybackTransportController->HandlePlayFailed(msg);
     break;
   }
 

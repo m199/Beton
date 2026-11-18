@@ -1,3 +1,9 @@
+/*
+ * Copyright 2005-2026, Daniel Weber.
+ * Copyright 2026, David Beckman.
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
 #ifndef BETON_SINGLE_COLUMN_LIST_VIEW_H
 #define BETON_SINGLE_COLUMN_LIST_VIEW_H
 
@@ -23,7 +29,8 @@ struct SimpleItem {
 
 /**
  * @class SingleColumnListView
- * @brief A lightweight, custom list view that supports single selection.
+ * @brief A lightweight, custom list view; single selection, or several
+ *        items when SetMultipleSelection() is on.
  *
  * This view renders a list of strings (with optional associated paths) in a
  * vertical column. It handles drawing, scrollbar updates, and mouse interaction
@@ -65,8 +72,19 @@ public:
   int32 CountItems() const;
   const BString &ItemAt(int32 index) const;
   const BString &PathAt(int32 index) const;
+  /** The first selected item, or -1. */
   int32 CurrentSelection() const;
-  void Select(int32 index);
+  bool IsSelected(int32 index) const;
+  /** Selects @p index; unless @p extend, the others are deselected. */
+  void Select(int32 index, bool extend = false);
+  void Deselect(int32 index);
+
+  /**
+   * @brief Lets the user select several items: Ctrl- or Alt-click toggles
+   *        one, Shift-click selects a range. Item 0 ("Show all") is never
+   *        selected together with others.
+   */
+  void SetMultipleSelection(bool multiple);
   void RemoveItemAt(int32 index);
   void ScrollToSelection();
   void DeselectAll();
@@ -132,6 +150,11 @@ protected:
   bool fUseCustomColor = false;
   float fExtraBottomPadding = 0.0f;
   ///@}
+
+  int32 _FirstSelected() const;
+
+  bool fMultiple = false;
+  int32 fAnchor = -1; ///< Where a Shift-click range starts.
 };
 
 #endif // BETON_SINGLE_COLUMN_LIST_VIEW_H

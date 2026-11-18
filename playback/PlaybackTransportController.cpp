@@ -1,3 +1,9 @@
+/*
+ * Copyright 2005-2026, Daniel Weber.
+ * Copyright 2026, David Beckman.
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
 #include "PlaybackTransportController.h"
 
 #include "ArtworkController.h"
@@ -10,6 +16,7 @@
 #include "MediaItem.h"
 #include "AudioPlaybackEngine.h"
 #include "Messages.h"
+#include "PlaybackQueueManager.h"
 #include "RadioStationController.h"
 #include "PlaybackSeekBarView.h"
 #include "ViewStateController.h"
@@ -19,6 +26,7 @@
 #include <Message.h>
 #include <MessageRunner.h>
 #include <OS.h>
+#include <Path.h>
 #include <Slider.h>
 #include <String.h>
 #include <StringView.h>
@@ -270,6 +278,30 @@ PlaybackTransportController::HandleNowPlaying(BMessage *msg)
 }
 
 /**
+ * @brief Resets the transport when the engine could not open a track.
+ */
+void
+PlaybackTransportController::HandlePlayFailed(BMessage *msg)
+{
+  if (!fWindow || !msg)
+    return;
+
+  // Stale if something else has started since.
+  AudioPlaybackEngine *engine = fWindow->fPlaybackEngine;
+  if (engine && (engine->IsPlaying() || engine->IsPaused()))
+    return;
+
+  BString path;
+  msg->FindString("path", &path);
+
+  StopPlayback();
+
+  BString status(B_TRANSLATE("Could not play %file%"));
+  status.ReplaceFirst("%file%", BPath(path.String()).Leaf());
+  fWindow->UpdateStatus(status);
+}
+
+/**
  * @brief Updates internal now-playing cache and title label.
  */
 void
@@ -328,6 +360,13 @@ PlaybackTransportController::_UpdateNowPlayingState(const BString &path,
   auto npIt = fWindow->fPathIndex.find(path);
   if (npIt != fWindow->fPathIndex.end()) {
     fNowPlayingItem = fWindow->fAllItems[npIt->second];
+    fNowPlayingIsValid = true;
+    artist = fNowPlayingItem.artist;
+    title = fNowPlayingItem.title;
+  } else if (const MediaItem *queued = fWindow->fPlaybackQueueManager
+                 ? fWindow->fPlaybackQueueManager->QueueItemForPath(path)
+                 : nullptr) {
+    fNowPlayingItem = *queued;
     fNowPlayingIsValid = true;
     artist = fNowPlayingItem.artist;
     title = fNowPlayingItem.title;

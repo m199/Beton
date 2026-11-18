@@ -1,3 +1,9 @@
+/*
+ * Copyright 2005-2026, Daniel Weber.
+ * Copyright 2026, David Beckman.
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
 #include "PlaylistSelectionController.h"
 
 #include "MediaTableView.h"
@@ -6,9 +12,11 @@
 #include "Debug.h"
 #include "NowPlayingInfoPanel.h"
 #include "LibraryBrowserController.h"
+#include "LibraryController.h"
 #include "MainWindow.h"
 #include "Messages.h"
 #include "MetadataTagIO.h"
+#include "CddaTracks.h"
 #include "MusicSourceSettings.h"
 #include "PlaylistLibrary.h"
 #include "PlaylistEditController.h"
@@ -55,7 +63,7 @@ void PlaylistSelectionController::HandlePlaylistSelection(BMessage *msg) {
   fWindow->fIsDlnaMode = (kind == PlaylistItemKind::DLNA);
   fWindow->fIsCDMode = (kind == PlaylistItemKind::CD);
 
-  // Fast Edit makes no sense for Radio/DLNA/CD (read-only metadata).
+  // Fast Edit and rating make no sense for Radio/DLNA/CD (read-only metadata).
   // Temporarily disable it without touching fFastEditEnabled so the user's
   // preference is restored when switching back to an editable source.
   {
@@ -66,6 +74,7 @@ void PlaylistSelectionController::HandlePlaylistSelection(BMessage *msg) {
       if (!effective)
         cv->CommitCellEdit();
       cv->SetFastEditEnabled(effective);
+      cv->SetRatingEditable(editable);
     }
     if (fWindow->fFastEditItem)
       fWindow->fFastEditItem->SetMarked(effective);
@@ -217,110 +226,7 @@ void PlaylistSelectionController::ShowCDPlaylistSource(const BString &name) {
   // else falling back to fCDPath) stays on this disc rather than the first one.
   fWindow->fCDPath = cdPath;
 
-  std::vector<MediaItem> cdTracks;
-  if (!cdPath.IsEmpty()) {
-    BDirectory dir(cdPath.String());
-    if (dir.InitCheck() == B_OK) {
-      BEntry entry;
-      dir.Rewind();
-      int32 fallbackTrackNum = 1;
-      while (dir.GetNextEntry(&entry, true) == B_OK) {
-        if (!entry.IsFile())
-          continue;
-
-        BPath path;
-        if (entry.GetPath(&path) != B_OK)
-          continue;
-
-        BString pathStr(path.Path());
-        BString lower(pathStr);
-        lower.ToLower();
-        if (!lower.EndsWith(".wav") && !lower.EndsWith(".aiff") && lower.IFindFirst("track") < 0)
-          continue;
-
-        MediaItem item;
-        item.path = pathStr;
-        item.base = cdPath;
-
-        BNode node(pathStr.String());
-        if (node.InitCheck() == B_OK) {
-          char buf[512];
-
-          memset(buf, 0, sizeof(buf));
-          if (node.ReadAttr("Media:Title", B_STRING_TYPE, 0, buf, sizeof(buf) - 1) > 0)
-            item.title = buf;
-          else if (node.ReadAttr("Audio:Title", B_STRING_TYPE, 0, buf, sizeof(buf) - 1) > 0)
-            item.title = buf;
-          else
-            item.title = path.Leaf();
-
-          memset(buf, 0, sizeof(buf));
-          if (node.ReadAttr("Audio:Artist", B_STRING_TYPE, 0, buf, sizeof(buf) - 1) > 0)
-            item.artist = buf;
-          else if (node.ReadAttr("Media:Artist", B_STRING_TYPE, 0, buf, sizeof(buf) - 1) > 0)
-            item.artist = buf;
-
-          memset(buf, 0, sizeof(buf));
-          if (node.ReadAttr("Audio:Album", B_STRING_TYPE, 0, buf, sizeof(buf) - 1) > 0)
-            item.album = buf;
-
-          memset(buf, 0, sizeof(buf));
-          if (node.ReadAttr("Media:Genre", B_STRING_TYPE, 0, buf, sizeof(buf) - 1) > 0)
-            item.genre = buf;
-          else if (node.ReadAttr("Audio:Genre", B_STRING_TYPE, 0, buf, sizeof(buf) - 1) > 0)
-            item.genre = buf;
-
-          int32 intVal = 0;
-          if (node.ReadAttr("Audio:Track", B_INT32_TYPE, 0, &intVal, sizeof(intVal)) > 0) {
-            item.track = intVal;
-          } else {
-            memset(buf, 0, sizeof(buf));
-            if (node.ReadAttr("Audio:Track", B_STRING_TYPE, 0, buf, sizeof(buf) - 1) > 0) {
-              item.track = atoi(buf);
-            } else {
-              int t = 0;
-              if (sscanf(path.Leaf(), "%d", &t) == 1 || sscanf(path.Leaf(), "Track %d", &t) == 1) {
-                item.track = t;
-              } else {
-                item.track = fallbackTrackNum;
-              }
-            }
-          }
-
-          if (node.ReadAttr("Media:Year", B_INT32_TYPE, 0, &intVal, sizeof(intVal)) > 0) {
-            item.year = intVal;
-          }
-
-          int64 len64 = 0;
-          if (node.ReadAttr("Media:Length", B_INT64_TYPE, 0, &len64, sizeof(len64)) > 0) {
-            item.duration = (int32)(len64 / 1000000LL);
-          } else if (node.ReadAttr("Media:Length", B_INT32_TYPE, 0, &intVal, sizeof(intVal)) > 0) {
-            item.duration = (intVal > 100000) ? (intVal / 1000000) : intVal;
-          }
-
-          off_t fileSize = 0;
-          if (entry.GetSize(&fileSize) == B_OK) {
-            item.size = fileSize;
-            if (item.duration == 0 && fileSize > 44) {
-              item.duration = (int32)((fileSize - 44) / 176400);
-            }
-          }
-        } else {
-          item.title = path.Leaf();
-          item.track = fallbackTrackNum;
-        }
-
-        fallbackTrackNum++;
-        cdTracks.push_back(item);
-      }
-    }
-  }
-
-  std::sort(cdTracks.begin(), cdTracks.end(), [](const MediaItem &a, const MediaItem &b) {
-    if (a.track != b.track)
-      return a.track < b.track;
-    return a.path < b.path;
-  });
+  std::vector<MediaItem> cdTracks = CddaTracks::Read(cdPath);
 
   fWindow->fLibraryManager->SetActiveItems(cdTracks);
   if (fWindow->fMediaLibraryCache) {
@@ -378,6 +284,10 @@ void PlaylistSelectionController::ShowRegularPlaylistSource(const BString &name)
   fWindow->fLibraryManager->ContentView()->SetFolderMode(false);
   fWindow->fLibraryManager->SetRadioFilterMode(false);
   std::vector<BString> paths = fWindow->fPlaylistLibrary->LoadPlaylist(name);
+  // Tracks put in the playlist before playlists joined them to the library
+  // show only a file name: add them now.
+  if (fWindow->fLibraryController)
+    fWindow->fLibraryController->AddPlaylistTracks(paths);
   fWindow->fLibraryManager->SetActivePaths(paths);
   if (fWindow->fMediaLibraryCache) {
     BMessage watchMsg(MSG_WATCH_FOLDER);

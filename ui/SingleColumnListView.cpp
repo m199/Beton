@@ -1,7 +1,14 @@
+/*
+ * Copyright 2005-2026, Daniel Weber.
+ * Copyright 2026, David Beckman.
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
 #include "SingleColumnListView.h"
 #include "Debug.h"
 
 #include <Font.h>
+#include <InterfaceDefs.h>
 #include <ScrollBar.h>
 #include <Window.h>
 
@@ -54,6 +61,7 @@ void SingleColumnListView::AddItem(const BString &text, const BString &path) {
 void SingleColumnListView::Clear() {
   fItems.clear();
   fCurrentSelection = -1;
+  fAnchor = -1;
   UpdateScrollbars();
   Invalidate();
 }
@@ -68,6 +76,7 @@ void SingleColumnListView::SetItems(
   fItems.clear();
   fItems.reserve(items.size());
   fCurrentSelection = -1;
+  fAnchor = -1;
   for (const auto &p : items) {
     fItems.push_back({p.first, p.second, false});
   }
@@ -103,7 +112,25 @@ const BString &SingleColumnListView::PathAt(int32 index) const {
 /**
  * @return The index of the currently selected item, or -1 if none.
  */
-int32 SingleColumnListView::CurrentSelection() const { return fCurrentSelection; }
+int32 SingleColumnListView::CurrentSelection() const {
+  // A single-selection list keeps its index (subclasses adjust it too).
+  return fMultiple ? _FirstSelected() : fCurrentSelection;
+}
+
+int32 SingleColumnListView::_FirstSelected() const {
+  for (int32 i = 0; i < (int32)fItems.size(); i++)
+    if (fItems[i].selected)
+      return i;
+  return -1;
+}
+
+bool SingleColumnListView::IsSelected(int32 index) const {
+  return index >= 0 && index < (int32)fItems.size() && fItems[index].selected;
+}
+
+void SingleColumnListView::SetMultipleSelection(bool multiple) {
+  fMultiple = multiple;
+}
 
 /**
  * @brief Removes the item at the specified index.
@@ -111,6 +138,7 @@ int32 SingleColumnListView::CurrentSelection() const { return fCurrentSelection;
 void SingleColumnListView::RemoveItemAt(int32 index) {
   if (index >= 0 && index < (int32)fItems.size()) {
     fItems.erase(fItems.begin() + index);
+    fAnchor = -1;
     Invalidate();
   }
 }
@@ -119,14 +147,23 @@ void SingleColumnListView::RemoveItemAt(int32 index) {
  * @brief Selects the item at the specified index.
  * @param index The index to select.
  */
-void SingleColumnListView::Select(int32 index) {
+void SingleColumnListView::Select(int32 index, bool extend) {
   if (index < 0 || index >= (int32)fItems.size())
     return;
-  if (fCurrentSelection >= 0 && fCurrentSelection < (int32)fItems.size())
-    fItems[fCurrentSelection].selected = false;
+  if (!extend || !fMultiple)
+    for (auto &item : fItems)
+      item.selected = false;
 
-  fCurrentSelection = index;
   fItems[index].selected = true;
+  fCurrentSelection = (extend && fMultiple) ? _FirstSelected() : index;
+  Invalidate();
+}
+
+void SingleColumnListView::Deselect(int32 index) {
+  if (index < 0 || index >= (int32)fItems.size() || !fItems[index].selected)
+    return;
+  fItems[index].selected = false;
+  fCurrentSelection = _FirstSelected();
   Invalidate();
 }
 
@@ -134,11 +171,15 @@ void SingleColumnListView::Select(int32 index) {
  * @brief Removes selection from all items.
  */
 void SingleColumnListView::DeselectAll() {
-  if (fCurrentSelection >= 0 && fCurrentSelection < (int32)fItems.size()) {
-    fItems[fCurrentSelection].selected = false;
-    fCurrentSelection = -1;
-    Invalidate();
+  bool any = false;
+  for (auto &item : fItems) {
+    any = any || item.selected;
+    item.selected = false;
   }
+  fCurrentSelection = -1;
+  fAnchor = -1;
+  if (any)
+    Invalidate();
 }
 
 /**
@@ -283,10 +324,39 @@ void SingleColumnListView::MouseDown(BPoint where) {
   MakeFocus(true);
   int32 index = (int32)(where.y / fItemHeight);
 
-  if (index >= 0 && index < (int32)fItems.size()) {
+  if (index < 0 || index >= (int32)fItems.size())
+    return;
+
+  const uint32 mods = modifiers();
+  const bool toggle = (mods & (B_COMMAND_KEY | B_CONTROL_KEY)) != 0;
+  const bool range = (mods & B_SHIFT_KEY) != 0;
+  if (!fMultiple || index == 0 || (!toggle && !range)) {
     Select(index);
-    SelectionChanged(index);
+    fAnchor = index;
+  } else {
+    // Several items: "Show all" (item 0) goes, as it can't be combined.
+    if (fItems[0].selected)
+      fItems[0].selected = false;
+    if (range && fAnchor > 0) {
+      if (!toggle)
+        for (auto &item : fItems)
+          item.selected = false;
+      for (int32 i = std::min(fAnchor, index); i <= std::max(fAnchor, index);
+           i++)
+        fItems[i].selected = true;
+    } else if (fItems[index].selected) {
+      fItems[index].selected = false;
+      fAnchor = index;
+      if (_FirstSelected() < 0)
+        fItems[0].selected = true; // Nothing left: show all.
+    } else {
+      fItems[index].selected = true;
+      fAnchor = index;
+    }
+    fCurrentSelection = _FirstSelected();
+    Invalidate();
   }
+  SelectionChanged(index);
 }
 
 void SingleColumnListView::MessageReceived(BMessage *msg) {

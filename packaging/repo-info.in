@@ -1,0 +1,114 @@
+# Indispensable Labs apps repository -- repo-info template.
+#
+# Substituted by packaging/build-repo.sh and published as `repo.info` at the
+# repository base URL. This is the file `pkgman add-repo <URL>` fetches first
+# (AddRepositoryRequest.cpp:53 appends "/repo.info"); it is also the input to
+# `package_repo create`.
+#
+# FORMAT: driver_settings text, NOT a flattened BMessage. Parsed by
+# BRepositoryInfo::_SetTo(const BEntry&), which reads the key `baseurl` -- all
+# lowercase. The BMessage field constant is spelled `baseUrl`, a different code
+# path that does not apply here.
+#
+# Required or the file is rejected as B_BAD_DATA: name, identifier (or the
+# legacy `url`), vendor, summary, priority, architecture.
+#
+# This repository is deliberately SEPARATE from the Media-OS one. Media-OS ships
+# kernel drivers; this ships ordinary userland apps. They share the `hpkg`
+# bucket and the hpkg.indispensablelabs.com domain, but nothing else -- a
+# different key prefix, a different identifier, a different name.
+#
+# ---------------------------------------------------------------------------
+# ⚠️ THIS FILE IS SHARED BY EVERY APP THAT PUBLISHES INTO THIS REPOSITORY
+# ---------------------------------------------------------------------------
+#
+# It lives in identical form in each app's packaging/ directory -- as of
+# 2026-08-29 that is BeTon/packaging/repo-info.in and
+# MidiMonitor2/packaging/repo-info.in. There is one repo.info object in the
+# bucket and publish-repo.sh overwrites it, so whichever app publishes LAST
+# decides what every subscriber sees. Divergent copies would make the
+# repository's own description flip-flop with each release.
+#
+# Keep the copies byte-identical -- `diff` them before a release -- and change
+# every copy in the same commit. The publish is not gated on this; nothing but
+# this comment enforces it.
+
+# ⚠️ MUST BE QUOTED. This is driver_settings format, where an unquoted value
+# ends at the first whitespace -- an unquoted `Indispensable Labs` parses as the
+# name "Indispensable" with a stray second argument, and `package_repo list`
+# will show it truncated. Media-OS never hit this because "Media-OS" is a single
+# token. Caught here on the first build, 2026-08-29, before publishing.
+#
+# The name is also the key Haiku matches an existing repository config by
+# (ActivateRepositoryConfigJob.cpp:41), so getting it wrong is not cosmetic --
+# it is what users pass to `pkgman drop-repo`.
+name			"Indispensable Labs"
+
+# ⚠️ MUST MATCH THE `vendor` FIELD OF EVERY PACKAGE IN THE REPOSITORY.
+#
+# package_repo refuses to build otherwise: RepositoryWriterImpl.cpp:405-410
+# compares the two (case-insensitively) and errors with "package '<name>' has
+# unexpected vendor". This bit the Media-OS repository on its first real build.
+#
+# Note this is the PACKAGER's vendor, not the software's author. Beton is
+# Daniel Weber's MIT-licensed work (see its copyrights field); "Indispensable
+# Labs" is who built and published this particular .hpkg.
+vendor			"Indispensable Labs"
+
+# THE ONE PIECE OF TEXT EVERY USER SEES BEFORE INSTALLING.
+summary			"Native Haiku applications packaged by Indispensable Labs. Ordinary userland apps only -- this repository contains no drivers and touches nothing outside the package system. For the Media-OS driver work, see the separate media-os repository."
+
+# STABLE IDENTITY. NEVER CHANGE IT for a given architecture. RFC 4151 tag: URI;
+# the year is when the domain was held, not the release date.
+#
+# ⚠️ Do NOT assume the identifier lets the repository move hosts for free. It
+# does not. Haiku selects an existing repository config by repository NAME:
+#
+#   ActivateRepositoryConfigJob.cpp:41  fTargetEntry.SetTo(&fTargetDirectory,
+#                                           repoInfo.Name().String())
+#
+# The identifier is only written into the config (:70) and printed by
+# `pkgman list-repos`; no code path matches on it. A URL change therefore costs
+# every existing subscriber a manual step, and `add-repo <newURL>` alone prompts
+# "already exists, overwrite?" with a default of NO -- so a user pressing enter
+# silently stays on the dead URL. Tell people to `drop-repo "Indispensable Labs"`
+# first; that form takes the NAME and has no wrong default.
+#
+# NO HAIKU RELEASE IN THE IDENTIFIER OR THE URL. Compatibility is declared per
+# package with `requires { haiku >= ... }`, which is where Haiku actually
+# enforces it; nothing in the package kit parses the base URL
+# (RepositoryConfig.cpp:265 only ever appends "/packages" to it).
+identifier		tag:indispensablelabs.com,2026:repositories/apps/@ARCH@
+
+baseurl			@BASEURL@
+
+# Lower number = higher precedence: LibsolvSolver.cpp:748 sets
+# `repo->priority = -1 - Priority()`, and libsolv prefers the larger value.
+# Haiku and HaikuPorts both publish 1. 50 is BRepositoryInfo's DEFAULT
+# (RepositoryInfo.cpp:29) -- not a value anyone chose -- and it places a
+# repository BELOW the official ones, not above.
+#
+# ⚠️ CHANGED 50 -> 1 on 2026-09-01, deliberately reversing the rule this comment
+# used to state ("it must never outrank the official repositories on a name
+# collision"). That rule assumed we would never collide. We do: `beton` also
+# exists in HaikuPorts, and at 50 every HaikuDepot update replaced this build
+# with theirs REGARDLESS OF VERSION -- priority is evaluated before version, so
+# publishing a higher version could not help.
+#
+# 1 MATCHES HaikuPorts rather than beating it, and that is the point: an equal
+# priority makes libsolv fall through to version comparison, so this repository
+# wins only where it actually ships something newer, on merit. 0 would win
+# outright but collides with BRepositoryConfig::kUnsetPriority, and winning every
+# tie unconditionally is not what we want.
+#
+# ⚠️ The trade the old comment warned about is now REAL: any package here that
+# shares a name with a HaikuPorts one is settled by version, not by whose it is.
+# Keep package names deliberate. The durable fix for `beton` specifically is a
+# distinct package name at the Concrete-DJ fork, after which this can return
+# to 50.
+priority		1
+
+# Must be a concrete architecture -- `any` is explicitly rejected
+# (RepositoryInfo.cpp:395-397). Arch-independent packages still live in an
+# arch-specific repository; that is how HaikuPorts does it too.
+architecture	@ARCH@

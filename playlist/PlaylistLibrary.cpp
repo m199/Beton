@@ -1,5 +1,12 @@
+/*
+ * Copyright 2005-2026, Daniel Weber.
+ * Copyright 2026, David Beckman.
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
 #include "PlaylistLibrary.h"
 #include "Debug.h"
+#include "Messages.h"
 #include "PlaylistSidebarView.h"
 #include <Directory.h>
 #include <Entry.h>
@@ -151,6 +158,12 @@ void PlaylistLibrary::SavePlaylist(const BString &name,
   DEBUG_PRINT("Playlist '%s' saved (%zu entries)\n", name.String(),
               paths.size());
 
+  // Playlist tracks are library tracks: the window adds any that are new.
+  BMessage saved(MSG_PLAYLIST_SAVED);
+  for (const auto &path : paths)
+    saved.AddString("path", path);
+  fTarget.SendMessage(&saved);
+
   if (fPlaylistView->FindIndexByName(name) < 0) {
     fPlaylistView->AddItem(name, playlistPath.Path());
   }
@@ -183,6 +196,7 @@ int32 PlaylistLibrary::AddFolderSource(const BString &path,
   }
 
   fFolderSources.push_back({uniqueLabel, path});
+  _FolderSourcesChanged();
   return fPlaylistView->AddItem(uniqueLabel.String(), path.String(), false,
                                 PlaylistItemKind::Folder);
 }
@@ -191,6 +205,7 @@ bool PlaylistLibrary::RemoveFolderSource(const BString &name) {
   for (auto it = fFolderSources.begin(); it != fFolderSources.end(); ++it) {
     if (it->label == name) {
       fFolderSources.erase(it);
+      _FolderSourcesChanged();
       return true;
     }
   }
@@ -217,6 +232,17 @@ BString PlaylistLibrary::FolderPathForName(const BString &name) const {
       return source.path;
   }
   return "";
+}
+
+std::vector<BString> PlaylistLibrary::FolderSourcePaths() const {
+  std::vector<BString> paths;
+  for (const auto &source : fFolderSources)
+    paths.push_back(source.path);
+  return paths;
+}
+
+void PlaylistLibrary::_FolderSourcesChanged() {
+  fTarget.SendMessage(MSG_SIDEBAR_FOLDERS);
 }
 
 bool PlaylistLibrary::IsFolderSource(const BString &name) const {
@@ -248,6 +274,7 @@ void PlaylistLibrary::LoadFolderSources(const BMessage &in) {
                               path});
     item.MakeEmpty();
   }
+  _FolderSourcesChanged();
 }
 
 void PlaylistLibrary::GetPlaylistNames(BMessage &out, bool onlyWritable) const {

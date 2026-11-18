@@ -1,3 +1,9 @@
+/*
+ * Copyright 2005-2026, Daniel Weber.
+ * Copyright 2026, David Beckman.
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
 #include "PlaylistEditController.h"
 #include <map>
 
@@ -878,7 +884,10 @@ void PlaylistEditController::MoveSelectedItemsToTrash() {
   // it is never a "playlist update" and must not be blocked by the
   // non-writable-playlist guard below (which otherwise silently no-ops because
   // a folder has a name but isn't a writable playlist).
-  bool inPlaylist = !fWindow->fIsFolderMode &&
+  // Only a real playlist: in the Library view fCurrentPlaylistName is
+  // "Library", which isn't a writable playlist, and the guard below used to
+  // make the action silently do nothing there.
+  bool inPlaylist = fWindow->IsPlaylistSelected() &&
       !fWindow->fCurrentPlaylistName.IsEmpty();
   bool updatesPlaylist = inPlaylist &&
       fWindow->fPlaylistLibrary->IsPlaylistWritable(fWindow->fCurrentPlaylistName);
@@ -1128,7 +1137,10 @@ void PlaylistEditController::MoveSelectedItemsTo(const entry_ref *targetDirRef) 
   // moving acts directly on disk and the view refreshes from the folder, so it
   // is never a "playlist update" and must not be blocked by the
   // non-writable-playlist guard below.
-  bool inPlaylist = !fWindow->fIsFolderMode &&
+  // Only a real playlist: in the Library view fCurrentPlaylistName is
+  // "Library", which isn't a writable playlist, and the guard below used to
+  // make the action silently do nothing there.
+  bool inPlaylist = fWindow->IsPlaylistSelected() &&
       !fWindow->fCurrentPlaylistName.IsEmpty();
   bool updatesPlaylist = inPlaylist &&
       fWindow->fPlaylistLibrary->IsPlaylistWritable(fWindow->fCurrentPlaylistName);

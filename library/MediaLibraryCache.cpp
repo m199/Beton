@@ -1,3 +1,9 @@
+/*
+ * Copyright 2005-2026, Daniel Weber.
+ * Copyright 2026, David Beckman.
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
 #include "MediaLibraryCache.h"
 #include "Config.h"
 #include "MetadataTagIO.h"
@@ -6,6 +12,7 @@
 #include "MediaLibraryScanner.h"
 #include "Messages.h"
 #include "MusicSourceSettings.h"
+#include "UndoManager.h"
 #include <Directory.h>
 #include <Entry.h>
 #include <File.h>
@@ -13,9 +20,12 @@
 #include <Node.h>
 #include <OS.h>
 #include <Path.h>
+#include <Volume.h>
+#include <VolumeRoster.h>
 #include <algorithm>
 #include <set>
 #include <stdio.h>
+#include <sys/resource.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -25,7 +35,7 @@ namespace {
 /** @brief Header magic of the binary cache format. */
 const uint32 kCacheMagic = 'BTCA';
 /** @brief Cache format version this build writes and is able to read. */
-const uint32 kCacheVersion = 2;
+const uint32 kCacheVersion = 4;
 
 /**
  * @brief Smallest possible on-disk record.
@@ -133,7 +143,7 @@ const int kMaxResyncProbes = 64;
  *         path written came from BPath, so a non-absolute one means the
  *         record boundaries have drifted and the bytes cannot be trusted.
  */
-bool ReadRecord(CacheReader &reader, MediaItem &e) {
+bool ReadRecord(CacheReader &reader, MediaItem &e, uint32 version) {
   if (!reader.ReadString(e.path) || !reader.ReadString(e.base) ||
       !reader.ReadString(e.title) || !reader.ReadString(e.artist) ||
       !reader.ReadString(e.album) || !reader.ReadString(e.albumArtist) ||
@@ -155,6 +165,20 @@ bool ReadRecord(CacheReader &reader, MediaItem &e) {
   if (!reader.Read(flags))
     return false;
   e.missing = (flags & 1) != 0;
+
+  if (version >= 3) {
+    // v3: ReplayGain. NaN when the file has no tags.
+    if (!reader.Read(e.rgTrackGain) || !reader.Read(e.rgTrackPeak) ||
+        !reader.Read(e.rgAlbumGain) || !reader.Read(e.rgAlbumPeak))
+      return false;
+  }
+  if (version < 4) {
+    // Older caches lack ReplayGain (v2), and before v4 the scanner never read
+    // album artist or the MusicBrainz album/track IDs, which album grouping
+    // depends on. Forget the mtime so the next scan reads every file once.
+    // v4 has the same layout as v3.
+    e.mtime = 0;
+  }
 
   return !e.path.IsEmpty() && e.path.ByteAt(0) == '/';
 }
@@ -323,6 +347,39 @@ MediaLibraryCache::~MediaLibraryCache() {
  * legacy 'directories.txt'.
  * @param outDirs Vector to populate with directory paths.
  */
+namespace {
+
+/** The Trash folder of every mounted volume. */
+std::vector<BString> TrashFolders() {
+  std::vector<BString> out;
+  BVolumeRoster roster;
+  BVolume volume;
+  while (roster.GetNextVolume(&volume) == B_OK) {
+    BPath trash;
+    if (find_directory(B_TRASH_DIRECTORY, &trash, false, &volume) == B_OK)
+      out.push_back(trash.Path());
+  }
+  return out;
+}
+
+bool IsUnder(const BString &path, const BString &dir) {
+  if (path == dir)
+    return true;
+  BString prefix(dir);
+  if (!prefix.EndsWith("/"))
+    prefix << "/";
+  return path.StartsWith(prefix);
+}
+
+bool IsUnderAny(const BString &path, const std::vector<BString> &dirs) {
+  for (const BString &dir : dirs)
+    if (IsUnder(path, dir))
+      return true;
+  return false;
+}
+
+} // namespace
+
 void MediaLibraryCache::LoadDirectories(std::vector<BString> &outDirs) {
   BPath p;
   if (find_directory(B_USER_SETTINGS_DIRECTORY, &p) != B_OK)
@@ -412,33 +469,17 @@ void MediaLibraryCache::StartScan() {
   }
   fRescanPending = false;
 
+  // Folders to scan for new files. The settings file can lag behind the
+  // sidebar, so the window's own list is added in.
   std::vector<BString> dirs;
   LoadDirectories(dirs);
+  for (const BString &folder : fSidebarFolders)
+    if (std::find(dirs.begin(), dirs.end(), folder) == dirs.end())
+      dirs.push_back(folder);
 
-  // 1) Remove entries that belong to directories no longer monitored.
-  for (auto it = fEntries.begin(); it != fEntries.end();) {
-    const MediaItem &e = it->second;
-    bool isUnderMonitored = false;
-    for (const auto &dir : dirs) {
-      if (e.base == dir) {
-        isUnderMonitored = true;
-        break;
-      }
-      BString prefix = dir;
-      if (!prefix.EndsWith("/"))
-        prefix << "/";
-      if (e.base.StartsWith(prefix)) {
-        isUnderMonitored = true;
-        break;
-      }
-    }
-    if (!isUnderMonitored) {
-      it = fEntries.erase(it);
-      fCacheDirty = true;
-    } else {
-      ++it;
-    }
-  }
+  // 1) Tracks are no longer dropped for lying outside these folders: the
+  //    library is every track added to it (folders, playlists, rips), and
+  //    only Remove from Library takes one out.
 
   // Notify UI that scan starts from current known state.
   if (fTarget.IsValid()) {
@@ -486,7 +527,10 @@ void MediaLibraryCache::StartScan() {
     fActiveScanners++;
   }
 
-  // 3) Remove stale files from reachable sources.
+  // 3) Files that are gone. In a sidebar folder the track goes with the file;
+  //    elsewhere it stays, marked missing, until Remove Missing Tracks. Tracks
+  //    moved to the Trash go now (their entry was kept for Undo).
+  const std::vector<BString> trash = TrashFolders();
   for (auto it = fEntries.begin(); it != fEntries.end();) {
     const BString path = it->first;
     bool wasMissing = it->second.missing;
@@ -506,8 +550,19 @@ void MediaLibraryCache::StartScan() {
     }
 
     BEntry e(path.String());
-    if (!e.Exists()) {
-      DEBUG_PRINT("Remove missing file: %s\n", path.String());
+    const bool inTrash = IsUnderAny(path, trash);
+    if (!e.Exists() && !inTrash && !IsUnderAny(path, fSidebarFolders)) {
+      if (!wasMissing) {
+        DEBUG_PRINT("Missing file: %s\n", path.String());
+        it->second.missing = true;
+        fCacheDirty = true;
+      }
+      ++it;
+      continue;
+    }
+    if (!e.Exists() || inTrash) {
+      DEBUG_PRINT("Remove %s file: %s\n", inTrash ? "trashed" : "missing",
+                  path.String());
 
       if (fTarget.IsValid()) {
         BMessage gone(MSG_MEDIA_ITEM_REMOVED);
@@ -642,6 +697,11 @@ void MediaLibraryCache::SaveCache() {
 
     uint8 flags = e.missing ? 1 : 0;
     writer.Write(flags);
+
+    writer.Write(e.rgTrackGain);
+    writer.Write(e.rgTrackPeak);
+    writer.Write(e.rgAlbumGain);
+    writer.Write(e.rgAlbumPeak);
   }
 
   if (!writer.Finish()) {
@@ -809,7 +869,7 @@ MediaLibraryCache::_ReadBinaryCache(BFile &file, off_t fileSize) {
     const off_t recordStart = reader.Position();
 
     MediaItem e;
-    if (ReadRecord(reader, e)) {
+    if (ReadRecord(reader, e, version)) {
       fSalvage.recovered++;
       if (IsDisabledMidiPath(e.path))
         fCacheDirty = true;
@@ -821,7 +881,8 @@ MediaLibraryCache::_ReadBinaryCache(BFile &file, off_t fileSize) {
     // The record is damaged or the file ended early. Look for the next intact
     // one; finding none means there is nothing left worth reading.
     damaged = true;
-    const off_t resume = _ResyncToNextRecord(file, recordStart, fileSize);
+    const off_t resume =
+        _ResyncToNextRecord(file, recordStart, fileSize, version);
     if (resume < 0 || !reader.SeekTo(resume))
       break;
 
@@ -864,7 +925,7 @@ MediaLibraryCache::_ReadBinaryCache(BFile &file, off_t fileSize) {
 }
 
 off_t MediaLibraryCache::_ResyncToNextRecord(BFile &file, off_t after,
-                                             off_t fileSize) {
+                                             off_t fileSize, uint32 version) {
   off_t from = after + 1;
 
   for (int probe = 0; probe < kMaxResyncProbes; probe++) {
@@ -876,7 +937,7 @@ off_t MediaLibraryCache::_ResyncToNextRecord(BFile &file, off_t after,
     // whole record actually parses from it.
     CacheReader trial(file, fileSize);
     MediaItem item;
-    if (trial.SeekTo(candidate) && ReadRecord(trial, item))
+    if (trial.SeekTo(candidate) && ReadRecord(trial, item, version))
       return candidate;
 
     from = candidate + 1;
@@ -1002,12 +1063,18 @@ void MediaLibraryCache::_DiscardCorruptCache() {
  * @brief Returns a copy of all current media items.
  * @return std::vector<MediaItem>
  */
+bool MediaLibraryCache::IsInTrash(const BString &path) {
+  return IsUnderAny(path, TrashFolders());
+}
+
 std::vector<MediaItem> MediaLibraryCache::AllEntries() const {
   std::vector<MediaItem> out;
   out.reserve(fEntries.size());
 
+  const std::vector<BString> trash = TrashFolders();
   for (const auto &kv : fEntries) {
-    out.push_back(kv.second);
+    if (!IsUnderAny(kv.first, trash))
+      out.push_back(kv.second);
   }
   return out;
 }
@@ -1051,6 +1118,8 @@ void MediaLibraryCache::MessageReceived(BMessage *msg) {
         e.album = tmp;
       if (msg->FindString("genre", i, &tmp) == B_OK)
         e.genre = tmp;
+      if (msg->FindString("albumArtist", i, &tmp) == B_OK)
+        e.albumArtist = tmp;
 
       msg->FindInt32("year", i, &e.year);
       msg->FindInt32("track", i, &e.track);
@@ -1061,6 +1130,7 @@ void MediaLibraryCache::MessageReceived(BMessage *msg) {
       msg->FindInt64("mtime", i, &e.mtime);
       msg->FindInt64("inode", i, &e.inode);
       msg->FindInt32("rating", i, &e.rating);
+      e.ReadGainFields(*msg, i);
       if (e.rating > 0)
         DEBUG_PRINT("Received rating %d for %s\n", (int)e.rating,
                     e.path.String());
@@ -1115,19 +1185,34 @@ void MediaLibraryCache::MessageReceived(BMessage *msg) {
     if (msg->FindString("composer", &tmpStr) == B_OK)
       e.composer = tmpStr;
 
-    msg->FindInt32("year", &e.year);
-    msg->FindInt32("track", &e.track);
-    msg->FindInt32("trackTotal", &e.trackTotal);
-    msg->FindInt32("disc", &e.disc);
-    msg->FindInt32("discTotal", &e.discTotal);
-    msg->FindInt32("duration", &e.duration);
-    msg->FindInt32("bitrate", &e.bitrate);
-    msg->FindInt32("sampleRate", &e.sampleRate);
-    msg->FindInt32("channels", &e.channels);
-    msg->FindInt32("rating", &e.rating);
-    msg->FindInt64("size", &e.size);
-    msg->FindInt64("mtime", &e.mtime);
-    msg->FindInt64("inode", &e.inode);
+    // Updates carry only the fields they change (an Analyze result has just
+    // the gain; MusicBrainz has no size/mtime/inode), so apply only what is
+    // there. Haiku's BMessage::Find*() zeroes its output before looking, so
+    // reading straight into the entry wiped every field the sender left out.
+    auto readInt32 = [msg](const char *name, int32 &field) {
+      int32 value;
+      if (msg->FindInt32(name, &value) == B_OK)
+        field = value;
+    };
+    auto readInt64 = [msg](const char *name, int64 &field) {
+      int64 value;
+      if (msg->FindInt64(name, &value) == B_OK)
+        field = value;
+    };
+    readInt32("year", e.year);
+    readInt32("track", e.track);
+    readInt32("trackTotal", e.trackTotal);
+    readInt32("disc", e.disc);
+    readInt32("discTotal", e.discTotal);
+    readInt32("duration", e.duration);
+    readInt32("bitrate", e.bitrate);
+    readInt32("sampleRate", e.sampleRate);
+    readInt32("channels", e.channels);
+    readInt32("rating", e.rating);
+    readInt64("size", e.size);
+    readInt64("mtime", e.mtime);
+    readInt64("inode", e.inode);
+    e.ReadGainFields(*msg);
 
     if (msg->FindString("mbAlbumId", &tmpStr) == B_OK ||
         msg->FindString("mbAlbumID", &tmpStr) == B_OK)
@@ -1151,11 +1236,21 @@ void MediaLibraryCache::MessageReceived(BMessage *msg) {
     break;
   }
 
+  case MSG_FILE_MOVE_EXPECTED: {
+    // Sent before the move, so it is here ahead of the node monitor's report.
+    BString to;
+    if (msg->FindString("to", &to) == B_OK)
+      fExpectedMoves.insert(to);
+    break;
+  }
+
   case MSG_FILE_MOVED: {
     BString from, to;
     if (msg->FindString("from", &from) != B_OK ||
         msg->FindString("to", &to) != B_OK)
       break;
+    // The move is done; if no folder watch reported it, nothing will now.
+    fExpectedMoves.erase(to);
 
     auto it = fEntries.find(from);
     if (it == fEntries.end())
@@ -1164,12 +1259,122 @@ void MediaLibraryCache::MessageReceived(BMessage *msg) {
     MediaItem e = it->second;
     fEntries.erase(it);
     e.path = to;
+    e.missing = false;
     fEntries[e.path] = e;
 
     DEBUG_PRINT("File moved in cache: %s -> %s\n", from.String(),
                 to.String());
     SaveCache();
     fCacheDirty = false;
+
+    // Back out of the Trash (Undo): the window dropped the track when it
+    // went in, so have it reload the library.
+    const std::vector<BString> trash = TrashFolders();
+    if (IsUnderAny(from, trash) && !IsUnderAny(to, trash) &&
+        fTarget.IsValid())
+      fTarget.SendMessage(MSG_CACHE_LOADED);
+    break;
+  }
+
+  case MSG_SIDEBAR_FOLDERS: {
+    const std::vector<BString> before = fSidebarFolders;
+    fSidebarFolders.clear();
+    BString path;
+    for (int32 i = 0; msg->FindString("path", i, &path) == B_OK; i++)
+      fSidebarFolders.push_back(path);
+    DEBUG_PRINT("%zu sidebar folders\n", fSidebarFolders.size());
+
+    // A folder added to the sidebar brings its music into the library. (The
+    // first list arrives at startup, where the library scan covers them.)
+    if (fSidebarFoldersKnown) {
+      for (const BString &folder : fSidebarFolders)
+        if (std::find(before.begin(), before.end(), folder) == before.end())
+          ScanPath(folder);
+    }
+    fSidebarFoldersKnown = true;
+    _WatchSidebarFolders();
+    break;
+  }
+
+  case MSG_LIBRARY_REMOVE: {
+    BString path;
+    int32 removed = 0;
+    std::map<BString, MediaItem> batch;
+    for (int32 i = 0; msg->FindString("path", i, &path) == B_OK; i++) {
+      auto it = fEntries.find(path);
+      if (it == fEntries.end())
+        continue;
+      batch[path] = it->second;
+      fEntries.erase(it);
+      removed++;
+      if (fTarget.IsValid()) {
+        BMessage gone(MSG_MEDIA_ITEM_REMOVED);
+        gone.AddString("path", path);
+        fTarget.SendMessage(&gone);
+      }
+    }
+    DEBUG_PRINT("Removed %ld tracks from the library\n", (long)removed);
+    if (removed > 0) {
+      fRemovedBatches.push_back(std::move(batch));
+      while ((int32)fRemovedBatches.size() > UndoManager::kMaxDepth)
+        fRemovedBatches.pop_front();
+      fCacheDirty = true;
+      _ScheduleSave();
+    }
+    break;
+  }
+
+  case MSG_LIBRARY_RESTORE: {
+    // Undo of a removal: the newest stashed copy of each path is the one that
+    // removal took out.
+    BString path;
+    int32 restored = 0;
+    std::vector<BString> unknown;
+    for (int32 i = 0; msg->FindString("path", i, &path) == B_OK; i++) {
+      if (fEntries.count(path) > 0)
+        continue; // Added back some other way since.
+      bool found = false;
+      for (auto b = fRemovedBatches.rbegin(); b != fRemovedBatches.rend();
+           ++b) {
+        auto it = b->find(path);
+        if (it == b->end())
+          continue;
+        fEntries[path] = it->second;
+        b->erase(it);
+        found = true;
+        restored++;
+        break;
+      }
+      if (!found)
+        unknown.push_back(path);
+    }
+    while (!fRemovedBatches.empty() && fRemovedBatches.front().empty())
+      fRemovedBatches.pop_front();
+    DEBUG_PRINT("Restored %ld tracks to the library (%zu rescanned)\n",
+                (long)restored, unknown.size());
+
+    // Not stashed (shouldn't happen): read the file again.
+    if (!unknown.empty()) {
+      BMessage scan(MSG_SCAN_FILES);
+      for (const BString &p : unknown) {
+        scan.AddString("path", p);
+        scan.AddInt32("playlist", -1);
+      }
+      _QueueFileScans(&scan);
+    }
+    if (restored > 0) {
+      fCacheDirty = true;
+      _ScheduleSave();
+    }
+
+    // The playlists go back once their tracks are in the library again.
+    if (fTarget.IsValid()) {
+      BMessage then;
+      for (int32 i = 0; msg->FindMessage("then", i, &then) == B_OK; i++)
+        fTarget.SendMessage(&then);
+      if (restored > 0)
+        fTarget.SendMessage(MSG_CACHE_LOADED);
+    }
     break;
   }
 
@@ -1493,6 +1698,15 @@ void MediaLibraryCache::ScanPath(const BString &dirPath) {
   if (dir.InitCheck() != B_OK)
     return;
 
+  // Selecting a folder row asks for a scan each time. Repeated clicks used to
+  // stack up full scans of the same folder (seen: 15 scans of 17 files).
+  for (const auto &kv : fFolderScanPaths) {
+    if (kv.second == dirPath) {
+      DEBUG_PRINT("ScanPath: %s is already being scanned\n", dirPath.String());
+      return;
+    }
+  }
+
   // The scanner only reports files it finds, so anything deleted while this
   // folder was not being watched would survive as a stale row. Reconcile
   // before scanning so the view drops it.
@@ -1512,77 +1726,243 @@ void MediaLibraryCache::ScanPath(const BString &dirPath) {
   scanner->Run();
 
   fScanners[scanner->ScanId()] = scanner;
+  fFolderScanPaths[scanner->ScanId()] = dirPath;
 
   BMessenger msgr(scanner);
   msgr.SendMessage(MSG_START_SCAN);
   fActiveScanners++;
 }
 
+namespace {
+
+/** Haiku lets an app watch 4096 nodes by default; every folder of a large
+ *  collection needs one, so ask for the most the kernel allows (65536). */
+void RaiseNodeMonitorLimit() {
+  static bool raised = false;
+  if (raised)
+    return;
+  raised = true;
+  struct rlimit rl;
+  if (getrlimit(RLIMIT_NOVMON, &rl) != 0 || rl.rlim_cur >= rl.rlim_max)
+    return;
+  const rlim_t before = rl.rlim_cur;
+  rl.rlim_cur = rl.rlim_max;
+  if (setrlimit(RLIMIT_NOVMON, &rl) == 0)
+    DEBUG_PRINT("node monitor limit raised from %ld to %ld\n", (long)before,
+                (long)rl.rlim_cur);
+  else
+    DEBUG_PRINT("could not raise the node monitor limit (%ld)\n",
+                (long)before);
+}
+
+} // namespace
+
+void MediaLibraryCache::_WatchSidebarFolders() {
+  RaiseNodeMonitorLimit();
+
+  for (const node_ref &nref : fWatchedDirs)
+    watch_node(&nref, B_STOP_WATCHING, this);
+  fWatchedDirs.clear();
+  fWatchFailures = 0;
+
+  bigtime_t start = system_time();
+  for (const BString &folder : fSidebarFolders) {
+    BEntry entry(folder.String(), true);
+    if (entry.InitCheck() == B_OK && entry.IsDirectory())
+      _WatchDirTree(entry, nullptr);
+  }
+  DEBUG_PRINT("watching %zu folders in %zu sidebar folders (%ld failed, "
+              "%lld us)\n",
+              fWatchedDirs.size(), fSidebarFolders.size(),
+              (long)fWatchFailures, (long long)(system_time() - start));
+}
+
+void MediaLibraryCache::_WatchDirTree(const BEntry &dirEntry,
+                                      std::vector<BString> *audioFiles) {
+  node_ref nref;
+  if (dirEntry.GetNodeRef(&nref) != B_OK || !fWatchedDirs.insert(nref).second)
+    return;
+  if (watch_node(&nref, B_WATCH_DIRECTORY, this) != B_OK) {
+    fWatchedDirs.erase(nref);
+    fWatchFailures++;
+  }
+
+  // Links aren't followed below the top folder, so this can't loop.
+  BDirectory dir(&dirEntry);
+  BEntry child;
+  while (dir.GetNextEntry(&child) == B_OK) {
+    if (child.IsDirectory()) {
+      _WatchDirTree(child, audioFiles);
+    } else if (audioFiles != nullptr && child.IsFile()) {
+      BPath path;
+      if (child.GetPath(&path) == B_OK && _IsSupportedAudioFile(path.Path()))
+        audioFiles->push_back(path.Path());
+    }
+  }
+}
+
+void MediaLibraryCache::_UnwatchDirTree(const BEntry &dirEntry) {
+  node_ref nref;
+  if (dirEntry.GetNodeRef(&nref) != B_OK || fWatchedDirs.erase(nref) == 0)
+    return;
+  watch_node(&nref, B_STOP_WATCHING, this);
+
+  BDirectory dir(&dirEntry);
+  BEntry child;
+  while (dir.GetNextEntry(&child) == B_OK) {
+    if (child.IsDirectory())
+      _UnwatchDirTree(child);
+  }
+}
+
 void MediaLibraryCache::StartWatchingFolder(const BString &folderPath) {
   StopWatchingFolder();
 
   BEntry entry(folderPath.String(), true);
-  if (entry.InitCheck() != B_OK || !entry.Exists() || !entry.IsDirectory())
+  if (entry.InitCheck() != B_OK || !entry.IsDirectory())
     return;
 
+  // Its folders are already watched as part of the sidebar. While it is open,
+  // each audio file is watched too, so tag edits made by other apps show.
+  fShownFolder = folderPath;
   BDirectory dir(&entry);
-  _WatchDirRecursive(dir);
+  _WatchFilesRecursive(dir);
+  DEBUG_PRINT("watching %zu files in %s\n", fWatchedFiles.size(),
+              folderPath.String());
 }
 
 void MediaLibraryCache::StopWatchingFolder() {
-  for (const auto &nref : fWatchedNodes) {
+  for (const node_ref &nref : fWatchedFiles)
     watch_node(&nref, B_STOP_WATCHING, this);
-  }
-  fWatchedNodes.clear();
+  fWatchedFiles.clear();
+  fShownFolder = "";
 }
 
-void MediaLibraryCache::_WatchDirRecursive(BDirectory &dir) {
-  node_ref nref;
-  if (dir.GetNodeRef(&nref) == B_OK) {
-    bool alreadyWatched = false;
-    for (const auto &w : fWatchedNodes) {
-      if (w.device == nref.device && w.node == nref.node) {
-        alreadyWatched = true;
-        break;
-      }
-    }
-    if (!alreadyWatched) {
-      if (watch_node(&nref, B_WATCH_DIRECTORY | B_WATCH_NAME, this) == B_OK) {
-        fWatchedNodes.push_back(nref);
-      }
-    }
-  }
-
-  dir.Rewind();
+void MediaLibraryCache::_WatchFilesRecursive(BDirectory &dir) {
   BEntry entry;
   while (dir.GetNextEntry(&entry) == B_OK) {
     if (entry.IsDirectory()) {
       BDirectory subDir(&entry);
-      _WatchDirRecursive(subDir);
+      _WatchFilesRecursive(subDir);
     } else if (entry.IsFile()) {
-      BPath path;
-      if (entry.GetPath(&path) == B_OK && _IsSupportedAudioFile(path.Path())) {
-        node_ref fileRef;
-        if (entry.GetNodeRef(&fileRef) == B_OK) {
-          bool alreadyWatched = false;
-          for (const auto &w : fWatchedNodes) {
-            if (w.device == fileRef.device && w.node == fileRef.node) {
-              alreadyWatched = true;
-              break;
-            }
-          }
-          if (!alreadyWatched) {
-            if (watch_node(&fileRef, B_WATCH_STAT, this) == B_OK) {
-              fWatchedNodes.push_back(fileRef);
-            }
-          }
-        }
-      }
+      _WatchFile(entry);
     }
   }
 }
 
+void MediaLibraryCache::_WatchFile(const BEntry &file) {
+  BPath path;
+  node_ref nref;
+  if (file.GetPath(&path) != B_OK || !_IsSupportedAudioFile(path.Path()) ||
+      file.GetNodeRef(&nref) != B_OK || !fWatchedFiles.insert(nref).second)
+    return;
+  if (watch_node(&nref, B_WATCH_STAT, this) != B_OK)
+    fWatchedFiles.erase(nref);
+}
+
+bool MediaLibraryCache::_IsWatched(const node_ref &nref) const {
+  return fWatchedDirs.count(nref) > 0;
+}
+
+bool MediaLibraryCache::_DirPath(dev_t device, ino_t dirNode, BString &out) {
+  node_ref nref;
+  nref.device = device;
+  nref.node = dirNode;
+  BDirectory dir(&nref);
+  BEntry entry;
+  BPath path;
+  if (dir.InitCheck() != B_OK || dir.GetEntry(&entry) != B_OK ||
+      entry.GetPath(&path) != B_OK)
+    return false;
+  out = path.Path();
+  return true;
+}
+
+BString MediaLibraryCache::_FindEntryKey(dev_t device, ino_t dirNode,
+                                         const char *name, ino_t node) const {
+  if (name == nullptr || !_IsSupportedAudioFile(name))
+    return BString();
+  BString dirPath;
+  if (_DirPath(device, dirNode, dirPath)) {
+    BString path(dirPath);
+    path << "/" << name;
+    if (fEntries.count(path) > 0)
+      return path;
+  }
+  // The library may know the file by another spelling of its path (through a
+  // link, say): fall back to its node.
+  for (const auto &kv : fEntries) {
+    if (kv.second.inode == node && BString(kv.first).EndsWith(name))
+      return kv.first;
+  }
+  return BString();
+}
+
+void MediaLibraryCache::_RekeyEntry(const BString &fromRef,
+                                    const BString &to) {
+  const BString from(fromRef);
+  auto it = fEntries.find(from);
+  if (it == fEntries.end() || from == to)
+    return;
+  MediaItem item = it->second;
+  fEntries.erase(it);
+  item.path = to;
+  item.missing = false;
+  BPath parentPath;
+  if (BPath(to.String()).GetParent(&parentPath) == B_OK)
+    item.base = parentPath.Path();
+  fEntries[to] = item;
+  _ScheduleSave();
+
+  if (fTarget.IsValid()) {
+    BMessage fileMoved(MSG_FILE_MOVED);
+    fileMoved.AddString("from", from);
+    fileMoved.AddString("to", to);
+    fTarget.SendMessage(&fileMoved);
+  }
+}
+
+/**
+ * @brief Picks up an entry that appeared in a watched folder, by creation or
+ * by being moved in.
+ */
+void MediaLibraryCache::_HandleEntryArrived(const entry_ref &ref) {
+  // Not traversed: a link to a folder isn't watched as a folder.
+  BEntry entry(&ref);
+  BPath path(&ref);
+  if (!entry.Exists() || path.InitCheck() != B_OK)
+    return;
+  const bool inShownFolder =
+      !fShownFolder.IsEmpty() && IsUnder(path.Path(), fShownFolder);
+
+  if (entry.IsDirectory()) {
+    // A folder dropped in: watch it, and add its music.
+    std::vector<BString> files;
+    _WatchDirTree(entry, &files);
+    if (inShownFolder) {
+      BDirectory dir(&entry);
+      _WatchFilesRecursive(dir);
+    }
+    if (!files.empty()) {
+      BMessage scan(MSG_SCAN_FILES);
+      for (const BString &file : files) {
+        scan.AddString("path", file);
+        scan.AddInt32("playlist", -1);
+      }
+      _QueueFileScans(&scan);
+    }
+  } else if (entry.IsFile() && _IsSupportedAudioFile(path.Path())) {
+    if (inShownFolder)
+      _WatchFile(entry);
+    _ScanAndAddFile(path.Path());
+  }
+}
+
 void MediaLibraryCache::_HandleNodeMonitor(BMessage *msg, int32 opcode) {
+  int64 nodeDbg = -1;
+  msg->FindInt64("node", &nodeDbg);
+  DEBUG_PRINT("node monitor opcode %ld node %lld\n", (long)opcode,
+              (long long)nodeDbg);
   switch (opcode) {
     case B_ENTRY_CREATED: {
       dev_t device;
@@ -1591,44 +1971,35 @@ void MediaLibraryCache::_HandleNodeMonitor(BMessage *msg, int32 opcode) {
       if (msg->FindInt32("device", &device) == B_OK &&
           msg->FindInt64("directory", &directory) == B_OK &&
           msg->FindString("name", &name) == B_OK) {
-        entry_ref ref(device, directory, name);
-        BEntry entry(&ref, true);
-        if (entry.Exists()) {
-          if (entry.IsDirectory()) {
-            node_ref nref;
-            if (entry.GetNodeRef(&nref) == B_OK) {
-              if (watch_node(&nref, B_WATCH_DIRECTORY | B_WATCH_NAME, this) == B_OK) {
-                fWatchedNodes.push_back(nref);
-                BDirectory dir(&entry);
-                _WatchDirRecursive(dir);
-              }
-            }
-          } else if (entry.IsFile()) {
-            BPath path(&ref);
-            if (path.InitCheck() == B_OK && _IsSupportedAudioFile(path.Path())) {
-              node_ref fileRef;
-              if (entry.GetNodeRef(&fileRef) == B_OK) {
-                watch_node(&fileRef, B_WATCH_STAT, this);
-                fWatchedNodes.push_back(fileRef);
-              }
-              _ScanAndAddFile(path.Path());
-            }
-          }
-        }
+        _HandleEntryArrived(entry_ref(device, directory, name));
       }
       break;
     }
 
     case B_ENTRY_REMOVED: {
+      dev_t device;
+      ino_t directory;
       ino_t node;
-      if (msg->FindInt64("node", &node) == B_OK) {
-        for (auto it = fEntries.begin(); it != fEntries.end(); ++it) {
-          if (it->second.inode == node) {
-            _RemoveFileFromCache(it->first);
-            break;
-          }
-        }
-      }
+      const char *name = nullptr;
+      if (msg->FindInt32("device", &device) != B_OK ||
+          msg->FindInt64("directory", &directory) != B_OK ||
+          msg->FindInt64("node", &node) != B_OK)
+        break;
+      msg->FindString("name", &name);
+
+      node_ref nref;
+      nref.device = device;
+      nref.node = node;
+      // A folder can only be removed once empty, and its files were reported
+      // one by one before it.
+      if (fWatchedDirs.erase(nref) > 0)
+        break;
+      fWatchedFiles.erase(nref);
+
+      // Deleted from a sidebar folder: it leaves the library.
+      const BString key = _FindEntryKey(device, directory, name, node);
+      if (!key.IsEmpty())
+        _RemoveFileFromCache(key);
       break;
     }
 
@@ -1636,51 +2007,99 @@ void MediaLibraryCache::_HandleNodeMonitor(BMessage *msg, int32 opcode) {
       dev_t device;
       ino_t fromDir;
       ino_t toDir;
+      ino_t node;
       const char *fromName = nullptr;
       const char *toName = nullptr;
-      ino_t node;
-      if (msg->FindInt32("device", &device) == B_OK &&
-          msg->FindInt64("from_directory", &fromDir) == B_OK &&
-          msg->FindInt64("to_directory", &toDir) == B_OK &&
-          msg->FindString("from_name", &fromName) == B_OK &&
-          msg->FindString("to_name", &toName) == B_OK &&
-          msg->FindInt64("node", &node) == B_OK) {
-        
-        BString oldPath;
-        MediaItem item;
-        bool found = false;
-        for (auto it = fEntries.begin(); it != fEntries.end(); ++it) {
-          if (it->second.inode == node) {
-            oldPath = it->first;
-            item = it->second;
-            found = true;
-            break;
-          }
+      // Field names as the kernel sends them (node_monitor.cpp): with spaces,
+      // and the new name is plain "name".
+      if (msg->FindInt32("device", &device) != B_OK ||
+          msg->FindInt64("from directory", &fromDir) != B_OK ||
+          msg->FindInt64("to directory", &toDir) != B_OK ||
+          msg->FindString("name", &toName) != B_OK ||
+          msg->FindInt64("node", &node) != B_OK)
+        break;
+      msg->FindString("from name", &fromName);
+
+      node_ref toDirRef;
+      toDirRef.device = device;
+      toDirRef.node = toDir;
+      const bool toWatched = _IsWatched(toDirRef);
+
+      const entry_ref toRef(device, toDir, toName);
+      BEntry moved(&toRef);
+      BPath newPath(&toRef);
+      if (newPath.InitCheck() != B_OK)
+        break;
+
+      if (moved.IsDirectory()) {
+        BString oldDir;
+        const bool haveOld = fromName != nullptr &&
+                             _DirPath(device, fromDir, oldDir);
+        if (haveOld)
+          oldDir << "/" << fromName;
+        std::vector<BString> keys;
+        if (haveOld) {
+          for (const auto &kv : fEntries)
+            if (IsUnder(kv.first, oldDir))
+              keys.push_back(kv.first);
         }
 
-        if (found) {
-          entry_ref toRef(device, toDir, toName);
-          BPath path(&toRef);
-          if (path.InitCheck() == B_OK) {
-            BString newPath = path.Path();
-            fEntries.erase(oldPath);
-            item.path = newPath;
-            BPath parentPath;
-            if (path.GetParent(&parentPath) == B_OK) {
-              item.base = parentPath.Path();
-            }
-            fEntries[newPath] = item;
-            _ScheduleSave();
-
-            if (fTarget.IsValid()) {
-              BMessage fileMoved(MSG_FILE_MOVED);
-              fileMoved.AddString("from", oldPath);
-              fileMoved.AddString("to", newPath);
-              fTarget.SendMessage(&fileMoved);
-            }
-          }
+        // Renamed, or moved within or into the sidebar folders: its tracks
+        // are read again at their new place.
+        _UnwatchDirTree(moved);
+        if (toWatched) {
+          for (const BString &key : keys)
+            _RemoveFileFromCache(key);
+          _HandleEntryArrived(toRef);
+          break;
         }
+        // Moved out: its tracks leave the library, except in the Trash, where
+        // they are hidden so Restore can bring them back.
+        const BString newDir(newPath.Path());
+        const bool toTrash = IsInTrash(newDir);
+        for (const BString &key : keys) {
+          if (!toTrash) {
+            _RemoveFileFromCache(key);
+            continue;
+          }
+          BString to(newDir);
+          to << BString(key).Remove(0, oldDir.Length());
+          _RekeyEntry(key, to);
+        }
+        break;
       }
+
+      const BString oldKey = _FindEntryKey(device, fromDir, fromName, node);
+
+      // A move into or within a sidebar folder -- Tracker's Restore from Trash,
+      // a drag from another folder, a rename in place -- is an arrival: drop
+      // the old record (the window drops its item with it) and scan the file at
+      // its new path, which adds the row.
+      if (toWatched) {
+        if (!oldKey.IsEmpty())
+          _RemoveFileFromCache(oldKey);
+        _HandleEntryArrived(toRef);
+        break;
+      }
+
+      // Moved out of the sidebar folders: the track leaves the library, as
+      // if the file were deleted, except
+      //  - in the Trash, where it is hidden until the Trash is emptied so
+      //    Undo or Restore can still bring it back, and
+      //  - when Beton moved it (Move File To), so it was moved on purpose.
+      node_ref fileRef;
+      fileRef.device = device;
+      fileRef.node = node;
+      if (fWatchedFiles.erase(fileRef) > 0)
+        watch_node(&fileRef, B_STOP_WATCHING, this);
+      const BString to(newPath.Path());
+      const bool byBeton = fExpectedMoves.erase(to) > 0;
+      if (oldKey.IsEmpty())
+        break;
+      if (byBeton || IsInTrash(to))
+        _RekeyEntry(oldKey, to);
+      else
+        _RemoveFileFromCache(oldKey);
       break;
     }
 
@@ -1747,6 +2166,14 @@ void MediaLibraryCache::_ScanAndAddFile(const BString &pathStr) {
     item.rating = td.rating;
   }
 
+  ReplayGainInfo rg;
+  if (MetadataTagIO::ReadReplayGain(path, rg)) {
+    item.rgTrackGain = rg.trackGain;
+    item.rgTrackPeak = rg.trackPeak;
+    item.rgAlbumGain = rg.albumGain;
+    item.rgAlbumPeak = rg.albumPeak;
+  }
+
   AddOrUpdateEntry(item);
   _ScheduleSave();
 
@@ -1768,11 +2195,17 @@ void MediaLibraryCache::_ScanAndAddFile(const BString &pathStr) {
     update.AddInt32("rating", item.rating);
     update.AddInt32("duration", item.duration);
     update.AddInt32("bitrate", item.bitrate);
+    update.AddFloat("rgTrackGain", item.rgTrackGain);
+    update.AddFloat("rgTrackPeak", item.rgTrackPeak);
+    update.AddFloat("rgAlbumGain", item.rgAlbumGain);
+    update.AddFloat("rgAlbumPeak", item.rgAlbumPeak);
     fTarget.SendMessage(&update);
   }
 }
 
-void MediaLibraryCache::_RemoveFileFromCache(const BString &pathStr) {
+void MediaLibraryCache::_RemoveFileFromCache(const BString &pathRef) {
+  // Copy first: callers may pass the key of the very entry erased below.
+  const BString pathStr(pathRef);
   auto it = fEntries.find(pathStr);
   if (it != fEntries.end()) {
     fEntries.erase(it);
@@ -1837,6 +2270,7 @@ void MediaLibraryCache::_DestroyScanner(int32 scanId) {
 
   MediaLibraryScanner *scanner = it->second;
   fScanners.erase(it);
+  fFolderScanPaths.erase(scanId);
 
   // In the normal case the worker has already returned by the time its
   // MSG_SCAN_DONE reaches us, so this costs nothing.
@@ -1876,6 +2310,7 @@ void MediaLibraryCache::_StopAllScanners() {
   }
 
   fScanners.clear();
+  fFolderScanPaths.clear();
   fActiveScanners = 0;
 }
 
@@ -1918,7 +2353,8 @@ void MediaLibraryCache::_PrepareFileScanQueue() {
 
     // A track shared by two playlists is scanned once but counts as work for
     // both, so the playlist figure reflects what the user would expect.
-    if (i < fPendingFileScanPlaylists.size())
+    // Negative: queued by something other than a playlist (the CD ripper).
+    if (i < fPendingFileScanPlaylists.size() && fPendingFileScanPlaylists[i] >= 0)
       playlistsWithWork.insert(fPendingFileScanPlaylists[i]);
 
     if (seen.insert(path).second)
@@ -1968,11 +2404,19 @@ void MediaLibraryCache::_EmitScanProgress(bool force) {
 }
 
 void MediaLibraryCache::_QueueFileScans(BMessage *msg) {
+  // "refresh": read the files again even if the library has them.
+  // "known_only": only those the library has (nothing new is added).
+  const bool refresh = msg->GetBool("refresh", false);
+  const bool knownOnly = msg->GetBool("known_only", false);
   BString path;
   size_t added = 0;
   for (int32 i = 0; msg->FindString("path", i, &path) == B_OK; ++i) {
     if (path.IsEmpty())
       continue;
+    if (knownOnly && fEntries.count(path) == 0)
+      continue;
+    if (refresh)
+      fRefreshPaths.insert(path);
 
     int32 playlist = 0;
     msg->FindInt32("playlist", i, &playlist);
@@ -2001,7 +2445,7 @@ void MediaLibraryCache::_ProcessFileScanChunk() {
     const BString path = fPendingFileScans[fFileScanIndex++];
 
     // Already covered by a folder scan, or simply gone: nothing to read.
-    if (fEntries.find(path) != fEntries.end())
+    if (fEntries.find(path) != fEntries.end() && fRefreshPaths.erase(path) == 0)
       continue;
     if (!BEntry(path.String()).Exists())
       continue;

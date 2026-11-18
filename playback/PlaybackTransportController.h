@@ -46,6 +46,7 @@ public:
   
   /** @brief Updates now-playing metadata context from playback notification. */
   void HandleNowPlaying(BMessage *msg);
+  void HandlePlayFailed(BMessage *msg);
   
   /** @brief Returns whether cached now-playing item data is valid. */
   bool NowPlayingIsValid() const;

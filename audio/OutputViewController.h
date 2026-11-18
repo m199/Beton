@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, David Beckman.
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
 #ifndef OUTPUT_VIEW_CONTROLLER_H
 #define OUTPUT_VIEW_CONTROLLER_H
 

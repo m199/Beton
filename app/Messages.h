@@ -1,3 +1,9 @@
+/*
+ * Copyright 2005-2026, Daniel Weber.
+ * Copyright 2026, David Beckman.
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
 #ifndef BETON_MESSAGES_H
 #define BETON_MESSAGES_H
 
@@ -48,10 +54,17 @@
 #define MSG_TIME_UPDATE 'tmuc'    ///< Periodic playback time update.
 #define MSG_TRACK_ENDED 'tend'    ///< Current track finished playing.
 #define MSG_NOW_PLAYING 'nply'    ///< Notification of new track playing.
+#define MSG_PLAY_FAILED 'pfld'    ///< A queued track could not be opened.
 #define MSG_PLAY_BTN 'plyB'       ///< Play button clicked.
 #define MSG_PREV_BTN 'prvB'       ///< Previous button clicked.
 #define MSG_SHUFFLE_TOGGLE 'shuf' ///< Toggle shuffle mode.
 #define MSG_REPEAT_TOGGLE 'rept'  ///< Toggle repeat mode.
+#define MSG_REPLAYGAIN_MODE 'rgmd' ///< Set ReplayGain playback "mode" (int32).
+#define MSG_ANALYZE_LOUDNESS 'rgan' ///< Measure and tag ReplayGain for the selected tracks.
+#define MSG_GAIN_PREFETCH_TICK 'rgpt' ///< Timer: hand the gain prefetcher the tracks to measure.
+#define MSG_GAIN_PREFETCH_TOGGLE 'rgpm' ///< Settings: measure tracks without gain while playing.
+#define MSG_GAIN_WRITE_TOGGLE 'rgpw' ///< Settings: save gain measured while playing in the files.
+#define MSG_LOUDNESS_PROGRESS 'rgap' ///< Analysis thread -> window: progress/results.
 ///@}
 
 /** @name UI & Selection */
@@ -88,6 +101,7 @@
 #define MSG_TOGGLE_FAST_EDIT 'tgfe'       ///< Toggle inline cell editing.
 #define MSG_FILE_MOVE 'fmov'              ///< Request file move ("from"/"to" paths).
 #define MSG_FILE_MOVED 'fmvd'             ///< File moved on disk; rekey cache entry.
+#define MSG_FILE_MOVE_EXPECTED 'fmvx'     ///< Beton is about to move a file to "to": keep it in the library.
 #define MSG_UNDO 'undo'                   ///< Undo the last edit action.
 #define MSG_REDO 'redo'                   ///< Redo the last undone action.
 #define MSG_VIEWS_REFRESH 'vwrf'          ///< Debounced view refresh trigger.
@@ -221,6 +235,33 @@
 #define MSG_LOCAL_OUTPUT_REFRESH 'lcor'  ///< Refresh local output devices.
 #define MSG_CONFLICT_POLICY_CHANGED 'cplc' ///< On System Mixer Conflict policy changed.
 #define MSG_FALLBACK_DEVICE_CHANGED 'fbdc' ///< Fallback device for conflict changed.
+///@}
+
+/** @name Audio CD Ripping */
+///@{
+#define MSG_OPEN_IN_TRACKER 'sbOT'   ///< Sidebar menu: open the folder at "path" in Tracker.
+#define MSG_CD_RIP 'cdrp'            ///< Open the rip window ("path", "label" of the disc).
+#define MSG_CD_RIP_PROGRESS 'cdrP'   ///< Ripper -> window: "track", "tracks", "fraction", "title".
+#define MSG_CD_RIP_TRACK_DONE 'cdrT' ///< Ripper -> window: "track", "status", "path", "error".
+#define MSG_CD_RIP_FINISHED 'cdrF'   ///< Ripper -> window: counts, "cancelled", "path" per file.
+#define MSG_CD_RIP_IMPORT 'cdrI'     ///< Rip window -> MainWindow: add ripped "path"s to the library; "folder" (the save folder) becomes a library folder if none holds them.
+#define MSG_SIDEBAR_FOLDERS 'sbFL'   ///< Sidebar folders changed (to MainWindow); their "path"s (MainWindow -> cache).
+#define MSG_LIBRARY_REMOVE 'lbRm'    ///< Remove from Library: selection (menu -> view), or "path"s (MainWindow -> cache).
+#define MSG_ADD_TO_LIBRARY 'lbAD'    ///< File menu: open the Add to Library panel.
+#define MSG_ADD_TO_LIBRARY_REFS 'lbAR' ///< Add "refs" (files, folders searched recursively) to the library.
+#define MSG_DROP_INTO_FOLDER 'lbDF'  ///< "refs" dropped on a sidebar folder: move/copy them into "folder".
+#define MSG_FOLDER_COPY_DONE 'lbDC'  ///< Copy thread -> MainWindow: "to" paths copied, "failed", "error".
+#define MSG_PASTE_INTO_FOLDER 'lbPF' ///< Paste the files Tracker copied or cut into "folder".
+#define MSG_PASTE_FILES 'lbPS'       ///< Edit > Paste: into the open sidebar folder, or text into the focused field.
+#define MSG_REMOVE_MISSING 'lbRM'    ///< File menu: remove tracks whose files are gone.
+#define MSG_PLAYLIST_SAVED 'plSv'    ///< A playlist was written; its "path"s join the library.
+#define MSG_LIBRARY_RESTORE 'lbRs'   ///< Undo of a removal: put the "path"s back; "then" messages go back to the window after.
+#define MSG_CD_EJECT 'cdej'          ///< Unmount and eject the disc ("path", "label"); "rip_window_done" once the rip window has let go of it.
+#define MSG_CD_EJECT_FAILED 'cdeX'   ///< Eject thread -> MainWindow: "text" to show in an alert.
+#define MSG_CD_RESCAN 'cdrR'         ///< Debounced: CD volumes or their files were renamed.
+#define MSG_CD_RIP_PLAY 'cdrY'       ///< Rip window -> MainWindow: play ripped files ("path", "title", "artist", "album", "track", "duration" each; "index" to start at).
+#define MSG_CD_RIP_STATUS 'cdrS'     ///< Ripper -> window: "text" for a step before ripping.
+#define MSG_CD_RIP_OFFSET 'cdrO'     ///< Ripper -> window: detected drive "offset", "confidence".
 ///@}
 
 #endif // BETON_MESSAGES_H

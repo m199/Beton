@@ -1,0 +1,72 @@
+# Beton -- .PackageInfo template.
+#
+# @VERSION@ and @ARCH@ are substituted by packaging/build-package.sh.
+#
+# The `requires` below are pinned to SONAME MAJORS, read from the binary we
+# actually linked (readelf -d) and matched against what the providing packages
+# declare. This is load-bearing: a bare `lib:libavcodec` with no version is
+# satisfied by ANY ffmpeg generation, giving a package that resolves cleanly
+# and then fails to load against the wrong soname.
+#
+# ⚠️ These are the FFMPEG8 values, verified with readelf -d against the
+# 1.3.0-2 binary on hrev59866+53: libavcodec.so.62, libavformat.so.62,
+# libavutil.so.60, libswresample.so.6, plus libtag.so.1 and libmusicbrainz5.so.1.
+# Carried forward to 1.3.1 unchanged, which is safe ONLY because v1.3.1 is a
+# two-line edit to Beton.rdef's app_version resource (upstream e29cf79) and
+# touches no source file, no Makefile and no dependency. Re-verify on any
+# upstream release that is not purely a resource bump.
+#
+# 1.3.0-1 carried the ffmpeg6 generation instead (avcodec/avformat 60,
+# avutil 58, swresample 4). That was an accident of which ffmpeg*_devel was
+# installed on the build box, not a decision: upstream's recipe has declared
+# ffmpeg8 since 1.2.0, and HaikuPorts' own beton-1.2.0-1 requires
+# libavcodec>=62.28.101. If these numbers ever need changing again, re-read
+# them from `readelf -d` on the actual binary -- never copy them forward.
+
+name			beton
+version			@VERSION@
+architecture	@ARCH@
+
+summary			"A native music player and tag editor"
+
+description		"A native music player for Haiku.
+Features:
+- Audio playback
+- Audio CD (CDDA) playback
+- Internet Radio playback
+- DLNA playback
+- Playlist creation
+- Direct audio device output, bypassing the system mixer
+- Reads and writes tags, with bfs attribute synchronization
+- MusicBrainz metadata lookup
+- Color support, just drop a color on the seekbar"
+
+packager		"David Beckman <indispensablelabs@gmail.com>"
+
+# Must match the `vendor` in repo-info.in or package_repo refuses the build.
+# This is the packager, not the author -- see copyrights.
+vendor			"Indispensable Labs"
+
+copyrights {
+	"2025-2026 Daniel Weber"
+}
+
+licenses {
+	"MIT"
+}
+
+provides {
+	beton = @VERSION_BASE@
+	app:beton = @VERSION_BASE@
+}
+
+requires {
+	haiku >= r1~beta6
+	lib:libtag >= 1
+	lib:libmusicbrainz5 >= 1
+	lib:libavcodec >= 62
+	lib:libavformat >= 62
+	lib:libavutil >= 60
+	lib:libswresample >= 6
+	lib:libstdc++ >= 6
+}

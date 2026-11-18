@@ -1,3 +1,9 @@
+/*
+ * Copyright 2005-2026, Daniel Weber.
+ * Copyright 2026, David Beckman.
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
 #ifndef BETON_PLAYLIST_SIDEBAR_VIEW_H
 #define BETON_PLAYLIST_SIDEBAR_VIEW_H
 
@@ -35,6 +41,8 @@ public:
   virtual ~PlaylistSidebarView();
 
   void SelectionChanged(int32 index) override;
+  /** Points the CD row for @p oldPath at @p newPath (the disc was renamed). */
+  void RenameCDPath(const BString &oldPath, const BString &newPath);
   void MessageReceived(BMessage *msg) override;
   void MouseDown(BPoint where) override;
   void MouseMoved(BPoint point, uint32 transit,

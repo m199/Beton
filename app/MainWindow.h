@@ -1,3 +1,9 @@
+/*
+ * Copyright 2005-2026, Daniel Weber.
+ * Copyright 2026, David Beckman.
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
@@ -124,6 +130,8 @@ public:
   ///@{
   void LoadSettings();
   void SaveSettings();
+  /** Sets the ReplayGain playback mode and marks it in the Settings menu. */
+  void SetReplayGainMode(int32 mode);
 
   ///@}
 
@@ -184,8 +192,14 @@ private:
 #if ENABLE_DLNA_OUTPUT
   void _SetOutputMenuVisible(bool visible);
 #endif
+  /** Sends the sidebar's folders to the library cache. */
+  void _SendSidebarFolders();
   void _InitCDVolumeMonitoring();
   void _CheckMountedCDs();
+  /** Rescans CDs shortly after a rename, once the renames settle. */
+  void _ScheduleCDRescan();
+  /** Reloads the track list if a CD is being shown. */
+  void _ReloadShownCD();
 
 
   /** @name Data & State */
@@ -198,7 +212,13 @@ private:
   bool fIsDlnaMode = false;   ///< True = DLNA server browsing view
   bool fIsCDMode = false;     ///< True = Audio CD source view
   BString fCDPath;
+  BMessenger fCDRipWindow; ///< The open "Rip audio CD" window, if any.
   BVolumeRoster fVolumeRoster;
+  /** Mounted CDs by device: a CD looked up online is renamed after mounting,
+   *  so its path changes while the device stays the same. */
+  std::map<dev_t, BString> fCDDevicePaths;
+  dev_t fRootDevice = -1;                     ///< Where mount points live.
+  BMessageRunner *fCDRescanRunner = nullptr;
   BString fPlaylistPath;
   BString fCurrentPlaylistName;
 
@@ -249,6 +269,7 @@ private:
   ///@{
   BMenuBar *fMenuBar;
   BMenu *fSettingsMenu = nullptr;
+  BMenu *fReplayGainMenu = nullptr;
   BButton *fBtnPrev;
   BButton *fBtnPlayPause;
   BButton *fBtnStop;
@@ -294,11 +315,19 @@ private:
   BMenuItem *fTooltipsOffItem = nullptr;
 
   bool fFastEditEnabled = false;
+  /// Measure tracks without ReplayGain while playing (GainPrefetcher).
+  bool fGainPrefetch = true;
+  /// Save gain measured while playing in the files, not just the library.
+  bool fGainWriteFiles = false;
+  BMenuItem *fGainPrefetchItem = nullptr;
+  BMenuItem *fGainWriteItem = nullptr;
+  BMessageRunner *fGainPrefetchRunner = nullptr;
   BMenuItem *fFastEditItem = nullptr;
 
   UndoManager *fUndoManager{nullptr};
   BMenuItem *fUndoItem = nullptr;
   BMenuItem *fRedoItem = nullptr;
+  BMenuItem *fPasteItem = nullptr;
 
   bool fRadioEnabled = false;
   bool fDlnaEnabled = false;

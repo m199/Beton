@@ -41,7 +41,13 @@ public:
   void Select(int32 index);
   int32 CountItems() const;
 
+  /** Paths of the sidebar's folders. */
+  std::vector<BString> FolderSourcePaths() const;
+
 private:
+  /** Tells the window the folder list changed (MSG_SIDEBAR_FOLDERS). */
+  void _FolderSourcesChanged();
+
   /** @name Data */
   ///@{
   PlaylistSidebarView *fPlaylistView;

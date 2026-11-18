@@ -1,5 +1,12 @@
+/*
+ * Copyright 2005-2026, Daniel Weber.
+ * Copyright 2026, David Beckman.
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
 #include "PlaylistSidebarView.h"
 #include "Debug.h"
+#include "LibraryController.h"
 #include "Messages.h"
 #include "PlaylistNameDialog.h"
 #include "PlaylistLibrary.h"
@@ -14,6 +21,7 @@
 #include <MenuItem.h>
 #include <Path.h>
 #include <Resources.h>
+#include <Roster.h>
 #include <String.h>
 #include <TextControl.h>
 #include <MimeType.h>
@@ -48,10 +56,10 @@ static BBitmap *LoadSystemCDIcon(float size, const char *cdPath) {
   bool found = false;
 
   if (cdPath && cdPath[0] != '\0') {
-    BEntry entry(cdPath);
-    entry_ref ref;
-    if (entry.GetRef(&ref) == B_OK) {
-      vol.SetTo(ref.device);
+    // Not via an entry_ref: for a mount point that names the parent's volume.
+    dev_t device = dev_for_path(cdPath);
+    if (device >= 0) {
+      vol.SetTo(device);
       if (vol.InitCheck() == B_OK) {
         found = true;
       }
@@ -208,6 +216,24 @@ void PlaylistSidebarView::MessageReceived(BMessage *msg) {
         newMsg.AddMessage("files", msg);
         fTarget.SendMessage(&newMsg);
       }
+    } else if (KindAt(dropIndex) == PlaylistItemKind::Library) {
+      // Onto "Library": the files (and folders' contents) join the library;
+      // the folders don't become sidebar folders.
+      BMessage add(MSG_ADD_TO_LIBRARY_REFS);
+      entry_ref ref;
+      for (int32 i = 0; msg->FindRef("refs", i, &ref) == B_OK; ++i)
+        add.AddRef("refs", &ref);
+      fTarget.SendMessage(&add);
+    } else if (KindAt(dropIndex) == PlaylistItemKind::Folder) {
+      // Onto a sidebar folder: into that folder on disk, as in Tracker.
+      BMessage drop(MSG_DROP_INTO_FOLDER);
+      drop.AddString("folder", fManager ? fManager->FolderPathForName(
+                                              ItemAt(dropIndex))
+                                        : PathAt(dropIndex));
+      entry_ref ref;
+      for (int32 i = 0; msg->FindRef("refs", i, &ref) == B_OK; ++i)
+        drop.AddRef("refs", &ref);
+      fTarget.SendMessage(&drop);
     } else {
       if (!IsWritableAt(dropIndex)) {
         if (hasDirectoryRef && allRefsAreDirectories && fManager) {
@@ -264,6 +290,35 @@ void PlaylistSidebarView::MessageReceived(BMessage *msg) {
     RemoveSelectedPlaylist();
     break;
 
+  case MSG_CD_RIP:
+  case MSG_CD_EJECT:
+  case MSG_PASTE_INTO_FOLDER:
+    fTarget.SendMessage(msg);
+    break;
+
+  case MSG_OPEN_IN_TRACKER: {
+    BString path;
+    entry_ref ref;
+    if (msg->FindString("path", &path) != B_OK || path.IsEmpty() ||
+        get_ref_for_path(path.String(), &ref) != B_OK ||
+        !BEntry(&ref, true).IsDirectory()) {
+      BString text;
+      text.SetToFormat(B_TRANSLATE("The folder \"%s\" can't be found."),
+                       path.String());
+      (new BAlert(B_TRANSLATE("Open in Tracker"), text.String(),
+                  B_TRANSLATE("OK"), nullptr, nullptr, B_WIDTH_AS_USUAL,
+                  B_WARNING_ALERT))
+          ->Go(nullptr);
+      break;
+    }
+    // Tracker is the preferred app for folders.
+    status_t st = be_roster->Launch(&ref);
+    if (st != B_OK && st != B_ALREADY_RUNNING)
+      DEBUG_PRINT("Open in Tracker failed for %s: %s\n", path.String(),
+                  strerror(st));
+    break;
+  }
+
   default:
     SingleColumnListView::MessageReceived(msg);
   }
@@ -319,8 +374,31 @@ void PlaylistSidebarView::MouseDown(BPoint where) {
                                           new BMessage(MSG_DELETE_PLAYLIST)));
     } else if ((size_t)index < fRows.size() &&
                fRows[index].kind == PlaylistItemKind::Folder) {
+      const BString folderPath =
+          fManager ? fManager->FolderPathForName(clickedName) : PathAt(index);
+      BMessage *open = new BMessage(MSG_OPEN_IN_TRACKER);
+      open->AddString("path", folderPath);
+      fContextMenu->AddItem(
+          new BMenuItem(B_TRANSLATE("Open in Tracker"), open));
+      BMessage *paste = new BMessage(MSG_PASTE_INTO_FOLDER);
+      paste->AddString("folder", folderPath);
+      BMenuItem *pasteItem =
+          new BMenuItem(B_TRANSLATE("Paste into Folder"), paste);
+      pasteItem->SetEnabled(LibraryController::ClipboardHasFiles());
+      fContextMenu->AddItem(pasteItem);
+      fContextMenu->AddSeparatorItem();
       fContextMenu->AddItem(new BMenuItem(B_TRANSLATE("Remove"),
                                           new BMessage(MSG_DELETE_PLAYLIST)));
+    } else if (KindAt(index) == PlaylistItemKind::CD) {
+      BMessage *rip = new BMessage(MSG_CD_RIP);
+      rip->AddString("path", PathAt(index));
+      rip->AddString("label", ItemAt(index));
+      fContextMenu->AddItem(
+          new BMenuItem(B_TRANSLATE("Rip CD" B_UTF8_ELLIPSIS), rip));
+      BMessage *eject = new BMessage(MSG_CD_EJECT);
+      eject->AddString("path", PathAt(index));
+      eject->AddString("label", ItemAt(index));
+      fContextMenu->AddItem(new BMenuItem(B_TRANSLATE("Eject Disc"), eject));
     }
 
     if (fContextMenu->CountItems() > 0) {
@@ -393,7 +471,8 @@ void PlaylistSidebarView::MouseMoved(BPoint point, uint32 transit,
     if (dragMsg->HasRef("refs")) {
       fLastDropPoint = point;
       int32 idx = HitIndex(point);
-      if (idx >= 0 && IsWritableAt(idx))
+      if (idx >= 0 &&
+          (IsWritableAt(idx) || KindAt(idx) == PlaylistItemKind::Folder))
         SetHoverIndex(idx);
       else
         SetHoverIndex(-1);
@@ -581,6 +660,17 @@ BBitmap *PlaylistSidebarView::_IconFor(PlaylistItemKind kind,
     return fIconDlna;
   }
   return nullptr;
+}
+
+void PlaylistSidebarView::RenameCDPath(const BString &oldPath,
+                                       const BString &newPath) {
+  for (int32 i = 0; i < CountItems(); ++i) {
+    if (KindAt(i) == PlaylistItemKind::CD && PathAt(i) == oldPath &&
+        (size_t)i < fItems.size()) {
+      fItems[i].path = newPath;
+      return;
+    }
+  }
 }
 
 void PlaylistSidebarView::SyncCDItems(const std::vector<CDItemInfo> &mountedCDs) {

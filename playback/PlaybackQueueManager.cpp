@@ -1,3 +1,9 @@
+/*
+ * Copyright 2005-2026, Daniel Weber.
+ * Copyright 2026, David Beckman.
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
 #include "PlaybackQueueManager.h"
 
 #include "MediaTableView.h"
@@ -134,7 +140,7 @@ PlaybackQueueManager::PlayNext()
       int32 count = fWindow->fPlaybackEngine->QueueSize();
       if (count > 0) {
         fShuffleHistory.push_back(fWindow->fPlaybackEngine->CurrentIndex());
-        fWindow->fPlaybackEngine->Play(_RandomIndex(count));
+        fWindow->fPlaybackEngine->Play(_TakeShuffleNext(count));
       }
     } else {
       fWindow->fPlaybackEngine->PlayNext();
@@ -211,7 +217,7 @@ PlaybackQueueManager::HandleTrackEnded()
       int32 count = fWindow->fPlaybackEngine->QueueSize();
       if (count > 0) {
         fShuffleHistory.push_back(fWindow->fPlaybackEngine->CurrentIndex());
-        fWindow->fPlaybackEngine->Play(_RandomIndex(count));
+        fWindow->fPlaybackEngine->Play(_TakeShuffleNext(count));
       }
     } else if (fRepeatMode == RepeatAll) {
       if (fWindow->fPlaybackEngine->CurrentIndex() + 1 <
@@ -246,6 +252,8 @@ PlaybackQueueManager::ToggleShuffle()
 
   fShuffleEnabled = !fShuffleEnabled;
   fShuffleHistory.clear();
+  if (fWindow->fPlaybackEngine)
+    fWindow->fPlaybackEngine->SetShuffleHint(fShuffleEnabled);
   _UpdateShuffleIcon();
   if (fWindow->fViewStateController) {
     fWindow->fViewStateController->UpdateTooltips();
@@ -294,6 +302,8 @@ PlaybackQueueManager::SetShuffleEnabled(bool enabled)
 
   fShuffleEnabled = enabled;
   fShuffleHistory.clear();
+  if (fWindow->fPlaybackEngine)
+    fWindow->fPlaybackEngine->SetShuffleHint(fShuffleEnabled);
   _UpdateShuffleIcon();
 }
 
@@ -345,6 +355,13 @@ PlaybackQueueManager::PlayCurrentSelection()
   }
 }
 
+const MediaItem *
+PlaybackQueueManager::QueueItemForPath(const BString &path) const
+{
+  auto it = fQueueItems.find(path);
+  return it != fQueueItems.end() ? &it->second : nullptr;
+}
+
 void
 PlaybackQueueManager::PlayLocalSelection(MediaTableView *view,
                                             int32 rowIndex)
@@ -367,6 +384,15 @@ PlaybackQueueManager::PlayLocalSelection(MediaTableView *view,
   if (queue.empty())
     return;
 
+  // Now-playing details come from the library index; keep our own copy for
+  // tracks it does not hold, so they survive the view being reloaded.
+  fQueueItems.clear();
+  for (int32 i = 0; i < view->CountRows(); ++i) {
+    const MediaItem *mi = view->ItemAt(i);
+    if (mi && fWindow->fPathIndex.find(mi->path) == fWindow->fPathIndex.end())
+      fQueueItems[mi->path] = *mi;
+  }
+
   int32 queueIdx = QueueIndexForContentRow(view, rowIndex);
   DEBUG_PRINT("MSG_PLAY: start index=%ld (queue=%zu)\n",
               (long)queueIdx, queue.size());
@@ -378,10 +404,72 @@ PlaybackQueueManager::PlayLocalSelection(MediaTableView *view,
   _SetPlayPauseIcon();
 }
 
+void
+PlaybackQueueManager::PlayItems(const std::vector<MediaItem> &items,
+                                int32 index)
+{
+  if (!fWindow || !fWindow->fPlaybackEngine || items.empty())
+    return;
+  if (index < 0 || index >= (int32)items.size())
+    index = 0;
+
+  if (fWindow->fRadioStationController)
+    fWindow->fRadioStationController->CancelQueuedPlay();
+
+  std::vector<std::string> queue;
+  fQueueItems.clear();
+  for (const MediaItem &item : items) {
+    queue.push_back(item.path.String());
+    fQueueItems[item.path] = item;
+  }
+
+  DEBUG_PRINT("PlayItems: start index=%ld (queue=%zu)\n", (long)index,
+              queue.size());
+  _ClearDlnaQueue();
+  // A plain queue: track end, repeat and shuffle behave as for a playlist.
+  fActiveSource = SourcePlaylist;
+  fWindow->fPlaybackEngine->Stop();
+  fWindow->fPlaybackEngine->SetQueue(queue);
+  fWindow->fPlaybackEngine->Play(index);
+  _SetPlayPauseIcon();
+}
+
 int32
 PlaybackQueueManager::_RandomIndex(int32 count)
 {
   return std::uniform_int_distribution<int32>(0, count - 1)(fRng);
+}
+
+int32
+PlaybackQueueManager::_TakeShuffleNext(int32 count)
+{
+  int32 next = fShuffleNext;
+  fShuffleNext = -1;
+  return next >= 0 && next < count ? next : _RandomIndex(count);
+}
+
+int32
+PlaybackQueueManager::PeekNextIndex()
+{
+  if (!fWindow || !fWindow->fPlaybackEngine ||
+      (fActiveSource != SourceLibrary && fActiveSource != SourcePlaylist))
+    return -1;
+  AudioPlaybackEngine *engine = fWindow->fPlaybackEngine;
+  const int32 count = engine->QueueSize();
+  const int32 current = engine->CurrentIndex();
+  if (count <= 0 || current < 0)
+    return -1;
+  if (fRepeatMode == RepeatOne)
+    return current;
+  if (fShuffleEnabled) {
+    // Chosen now so it can be prepared; PlayNext() and the track's end use it.
+    if (fShuffleNext < 0 || fShuffleNext >= count)
+      fShuffleNext = _RandomIndex(count);
+    return fShuffleNext;
+  }
+  if (current + 1 < count)
+    return current + 1;
+  return fRepeatMode == RepeatAll ? 0 : -1;
 }
 
 void

@@ -1,8 +1,16 @@
+/*
+ * Copyright 2005-2026, Daniel Weber.
+ * Copyright 2026, David Beckman.
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
 #include "AudioPlaybackEngine.h"
 #include "DLNAService.h"
 #include "Debug.h"
+#include "GainStore.h"
 #include "LocalFileHttpServer.h"
 #include "Messages.h"
+#include "MetadataTagIO.h"
 #include "NetworkAudioStreamIO.h"
 
 #if ENABLE_LOCAL_OUTPUT
@@ -30,6 +38,8 @@ static AudioPlaybackEngine *sMidiHookController = nullptr;
 static void EmptyMidiFileHook(int32) {}
 
 static constexpr bigtime_t kAudioFadeDurationUs = 80000;
+/** The sound player's name, which the system mixer shows. */
+static const char *kMixerName = "Beton";
 
 static int64 FadeFrameCount(const media_raw_audio_format &format) {
   if (format.frame_rate <= 0)
@@ -415,7 +425,11 @@ void AudioPlaybackEngine::_ApplyFade(void *buffer, size_t size,
   }
 #endif
 
-  if (fadeIn <= 0 && fadeOut <= 0 && !needSoftwareVolume)
+  const float replayGain = fReplayGain.load(std::memory_order_relaxed);
+  const float replayGainFrom = fAppliedReplayGain;
+  fAppliedReplayGain = replayGain;
+  if (fadeIn <= 0 && fadeOut <= 0 && !needSoftwareVolume &&
+      replayGain == 1.0f && replayGainFrom == 1.0f)
     return;
 
   auto gainForFrame = [&](int64 frame) {
@@ -432,10 +446,16 @@ void AudioPlaybackEngine::_ApplyFade(void *buffer, size_t size,
     }
 
     if (gain < 0.0f)
-      return 0.0f;
+      gain = 0.0f;
     if (gain > 1.0f)
-      return 1.0f;
-    return gain;
+      gain = 1.0f;
+    // ReplayGain may lift a quiet track above unity; it was limited to the
+    // track's peak when it was set, so it does not clip. A new value glides
+    // in over this buffer.
+    if (replayGainFrom != replayGain && frames > 0)
+      return gain * (replayGainFrom + (replayGain - replayGainFrom) *
+                                          (float)(frame + 1) / frames);
+    return gain * replayGain;
   };
 
   if (format.format == media_raw_audio_format::B_AUDIO_FLOAT) {
@@ -669,10 +689,20 @@ void AudioPlaybackEngine::_SilenceMidi() {
   fMidiSynth->SetVolume(0.0);
 }
 
+void AudioPlaybackEngine::_NotifyPlayFailed(const char *path) {
+  if (!fTarget.IsValid())
+    return;
+  BMessage m(MSG_PLAY_FAILED);
+  m.AddString("path", path);
+  fTarget.SendMessage(&m);
+}
+
 void AudioPlaybackEngine::_StartPrebufferThread(int frameSize) {
   _StopPrebufferThread();
   fPrebufferFrameSize = frameSize > 0 ? frameSize : 4;
   fReaderEof.store(false, std::memory_order_relaxed);
+  fPendingSeek.store(-1, std::memory_order_relaxed);
+  fFlushRequested.store(false, std::memory_order_relaxed);
   fPrebufferRing.Init(524288);
   fPrebufferRunning.store(true, std::memory_order_relaxed);
   fPrebufferThread = spawn_thread(_PrebufferThreadEntry, "cd_prebuffer", B_NORMAL_PRIORITY, this);
@@ -708,6 +738,23 @@ void AudioPlaybackEngine::_PrebufferThreadFunc() {
   const size_t kBytesPerRead = (size_t)kFramesPerRead * frameSize;
   std::vector<uint8> scratch(kBytesPerRead);
   while (fPrebufferRunning.load(std::memory_order_relaxed)) {
+    // Seeks are done here, by the only thread that reads fTrack. Everything
+    // already in the ring was decoded before the seek; mark it for the
+    // callback to drop, or it would play out first (up to 3 s of it).
+    bigtime_t seekTo = fPendingSeek.exchange(-1, std::memory_order_relaxed);
+    if (seekTo >= 0 && fTrack) {
+      if (fTrack->SeekToTime(&seekTo, B_MEDIA_SEEK_CLOSEST_BACKWARD) == B_OK) {
+        while (fFlushSpin.test_and_set(std::memory_order_acquire))
+          ;
+        fFlushTo = fPrebufferRing.WritePos();
+        fFlushPos = seekTo;
+        fFlushRequested.store(true, std::memory_order_relaxed);
+        fFlushSpin.clear(std::memory_order_release);
+        fReaderEof.store(false, std::memory_order_relaxed);
+      }
+      continue;
+    }
+
     if (!fReaderEof.load(std::memory_order_relaxed) &&
         fPrebufferRing.AvailableWrite() >= kBytesPerRead) {
       int64 framesToRead = kFramesPerRead;
@@ -757,6 +804,7 @@ void AudioPlaybackEngine::Play(size_t trackIndex) {
   fCurrentIdx = trackIndex;
   const char *path = fQueue[trackIndex].c_str();
   DEBUG_PRINT("opening: %s\n", path);
+  _UpdateReplayGain(trackIndex);
 
 #if ENABLE_DLNA_OUTPUT || ENABLE_MIDI_PLAYBACK
   BString lowerPath = path;
@@ -822,6 +870,7 @@ void AudioPlaybackEngine::Play(size_t trackIndex) {
   if (st != B_OK) {
     DEBUG_PRINT("get_ref_for_path failed: %s (%ld)\n", strerror(st),
                 (long)st);
+    _NotifyPlayFailed(path);
     return;
   }
 
@@ -833,6 +882,7 @@ void AudioPlaybackEngine::Play(size_t trackIndex) {
       DEBUG_PRINT("BMidiSynthFile::LoadFile failed: %s (%ld)\n",
                   strerror(st), (long)st);
       _CleanupMedia();
+      _NotifyPlayFailed(path);
       return;
     }
 
@@ -856,6 +906,7 @@ void AudioPlaybackEngine::Play(size_t trackIndex) {
       DEBUG_PRINT("BMidiSynthFile::Start failed: %s (%ld)\n",
                   strerror(st), (long)st);
       _CleanupMedia();
+      _NotifyPlayFailed(path);
       return;
     }
 
@@ -877,6 +928,7 @@ void AudioPlaybackEngine::Play(size_t trackIndex) {
     DEBUG_PRINT("BMediaFile::InitCheck failed: %s (%ld)\n",
                 strerror(st), (long)st);
     _CleanupMedia();
+    _NotifyPlayFailed(path);
     return;
   }
 
@@ -884,6 +936,7 @@ void AudioPlaybackEngine::Play(size_t trackIndex) {
   if (!fTrack) {
     DEBUG_PRINT("TrackAt(0) returned nullptr\n");
     _CleanupMedia();
+    _NotifyPlayFailed(path);
     return;
   }
 
@@ -914,6 +967,7 @@ void AudioPlaybackEngine::Play(size_t trackIndex) {
     DEBUG_PRINT("DecodedFormat failed: %s (%ld)\n", strerror(st),
                 (long)st);
     _CleanupMedia();
+    _NotifyPlayFailed(path);
     return;
   }
 
@@ -942,7 +996,7 @@ void AudioPlaybackEngine::Play(size_t trackIndex) {
       // the negotiated format ourselves (see the resampler setup below).
       media_multi_audio_format format = media_multi_audio_format::wildcard;
 
-      fPlayer = new BSoundPlayer(node, &format, "Orchester", &input, &_PlayBuffer, NULL, this);
+      fPlayer = new BSoundPlayer(node, &format, kMixerName, &input, &_PlayBuffer, NULL, this);
 
       if (fPlayer && fPlayer->InitCheck() == B_OK) {
         // The decoder emits the file's NATIVE format (raf, from DecodedFormat
@@ -959,7 +1013,7 @@ void AudioPlaybackEngine::Play(size_t trackIndex) {
           delete fPlayer;
           fPlayer = nullptr;
           fLocalOutputManager.Release();
-          fPlayer = new BSoundPlayer(&raf, "Orchester", &_PlayBuffer, NULL, this);
+          fPlayer = new BSoundPlayer(&raf, kMixerName, &_PlayBuffer, NULL, this);
         } else {
           // Pre-size the source scratch for one device buffer so the audio
           // callback never allocates: worst-case source frames per callback.
@@ -993,7 +1047,7 @@ void AudioPlaybackEngine::Play(size_t trackIndex) {
           errMsg.AddString("text", "Device unavailable, falling back to system default");
           fTarget.SendMessage(&errMsg);
         }
-        fPlayer = new BSoundPlayer(&raf, "Orchester", &_PlayBuffer, NULL, this);
+        fPlayer = new BSoundPlayer(&raf, kMixerName, &_PlayBuffer, NULL, this);
       }
     } else {
       DEBUG_PRINT("Acquire device failed, falling back to default mixer\n");
@@ -1004,18 +1058,19 @@ void AudioPlaybackEngine::Play(size_t trackIndex) {
         errMsg.AddString("text", "Device in use, falling back to system default");
         fTarget.SendMessage(&errMsg);
       }
-      fPlayer = new BSoundPlayer(&raf, "Orchester", &_PlayBuffer, NULL, this);
+      fPlayer = new BSoundPlayer(&raf, kMixerName, &_PlayBuffer, NULL, this);
     }
   } else {
-    fPlayer = new BSoundPlayer(&raf, "Orchester", &_PlayBuffer, NULL, this);
+    fPlayer = new BSoundPlayer(&raf, kMixerName, &_PlayBuffer, NULL, this);
   }
 #else
-  fPlayer = new BSoundPlayer(&raf, "Orchester", &_PlayBuffer, NULL, this);
+  fPlayer = new BSoundPlayer(&raf, kMixerName, &_PlayBuffer, NULL, this);
 #endif
 
   if (!fPlayer || fPlayer->InitCheck() != B_OK) {
     DEBUG_PRINT("BSoundPlayer new/init failed\n");
     _CleanupMedia();
+    _NotifyPlayFailed(path);
     return;
   }
 
@@ -1077,6 +1132,85 @@ void AudioPlaybackEngine::Play(size_t trackIndex) {
  *
  * @param url The stream URL to play.
  */
+void AudioPlaybackEngine::SetReplayGainMode(int32 mode) {
+  if (mode < kReplayGainOff || mode > kReplayGainAuto)
+    mode = kReplayGainAuto;
+  fReplayGainMode.store(mode);
+  // Takes effect from the next track; re-evaluate the current one now.
+  if (fCurrentIdx < fQueue.size() && !fIsStreaming.load())
+    _UpdateReplayGain(fCurrentIdx);
+}
+
+void AudioPlaybackEngine::RefreshReplayGain(const BString &path) {
+  const size_t index = fCurrentIdx;
+  if (fIsStreaming.load() || index >= fQueue.size() ||
+      path != fQueue[index].c_str())
+    return;
+  _UpdateReplayGain(index);
+}
+
+bool AudioPlaybackEngine::_IsPlayedInAlbumOrder(size_t index) {
+  TagData current;
+  if (!MetadataTagIO::ReadTags(BPath(fQueue[index].c_str()), current) ||
+      current.album.IsEmpty() || current.track == 0)
+    return false;
+
+  auto adjacent = [&](size_t other, int32 expectedTrack) {
+    if (other >= fQueue.size() || expectedTrack <= 0)
+      return false;
+    TagData t;
+    return MetadataTagIO::ReadTags(BPath(fQueue[other].c_str()), t) &&
+           t.album == current.album && (int32)t.track == expectedTrack;
+  };
+  return (index > 0 && adjacent(index - 1, (int32)current.track - 1)) ||
+         adjacent(index + 1, (int32)current.track + 1);
+}
+
+void AudioPlaybackEngine::_UpdateReplayGain(size_t index) {
+  float linear = 1.0f;
+  float db = 0.0f;
+  const int32 mode = fReplayGainMode.load();
+
+  ReplayGainInfo rg;
+  bool found = false;
+  if (mode != kReplayGainOff && index < fQueue.size()) {
+    const char *path = fQueue[index].c_str();
+    found = MetadataTagIO::ReadReplayGain(BPath(path), rg);
+    // A gain Beton measured but kept in the library, not in the file.
+    ReplayGainInfo stored;
+    if (!rg.HasTrack() && GainStore::Get(BString(path), stored) &&
+        stored.HasTrack()) {
+      rg.trackGain = stored.trackGain;
+      rg.trackPeak = stored.trackPeak;
+      found = true;
+    }
+  }
+  if (found) {
+    bool album = false;
+    if (mode == kReplayGainAlbum)
+      album = rg.HasAlbum();
+    else if (mode == kReplayGainAuto)
+      album = rg.HasAlbum() && !fShuffleHint.load() &&
+              _IsPlayedInAlbumOrder(index);
+
+    const float gain = album ? rg.albumGain : rg.trackGain;
+    const float peak = album ? rg.albumPeak : rg.trackPeak;
+    if (!std::isnan(gain)) {
+      db = gain;
+      linear = powf(10.0f, gain / 20.0f);
+      // Never push the loudest sample past full scale.
+      if (!std::isnan(peak) && peak > 0.0f && linear * peak > 1.0f) {
+        linear = 1.0f / peak;
+        db = 20.0f * log10f(linear);
+      }
+    }
+    DEBUG_PRINT("ReplayGain: %s gain %+.2f dB (tag %+.2f, peak %.4f) -> x%.4f\n",
+                album ? "album" : "track", db, gain, peak, linear);
+  }
+  fReplayGain.store(linear);
+  fReplayGainDb.store(db);
+}
+
 void AudioPlaybackEngine::PlayUrl(const BUrl &url, const char *title,
                                       int32 durationSeconds,
                                       BUrlContext *context) {
@@ -1089,6 +1223,9 @@ void AudioPlaybackEngine::PlayUrl(const BUrl &url, const char *title,
 #endif
   fCurrentUrl = url;
   fCurrentTitle = title ? title : "";
+  // Streams carry no ReplayGain tags.
+  fReplayGain.store(1.0f);
+  fReplayGainDb.store(0.0f);
 
   BAutolock lock(fPlayLock);
   DEBUG_PRINT("PlayUrl(%s, duration=%ld) called\n",
@@ -1230,7 +1367,7 @@ void AudioPlaybackEngine::PlayUrl(const BUrl &url, const char *title,
       // supported format rather than forcing the stream's format (see Play()).
       media_multi_audio_format format = media_multi_audio_format::wildcard;
 
-      fPlayer = new BSoundPlayer(node, &format, "Orchester", &input, &_PlayBuffer, NULL, this);
+      fPlayer = new BSoundPlayer(node, &format, kMixerName, &input, &_PlayBuffer, NULL, this);
 
       if (fPlayer && fPlayer->InitCheck() == B_OK) {
         // NOTE: the stream's resample target was already set before Open()
@@ -1253,7 +1390,7 @@ void AudioPlaybackEngine::PlayUrl(const BUrl &url, const char *title,
           errMsg.AddString("text", "Device unavailable, falling back to system default");
           fTarget.SendMessage(&errMsg);
         }
-        fPlayer = new BSoundPlayer(&raf, "Orchester", &_PlayBuffer, NULL, this);
+        fPlayer = new BSoundPlayer(&raf, kMixerName, &_PlayBuffer, NULL, this);
       }
     } else {
       DEBUG_PRINT("Acquire device failed, falling back to default mixer\n");
@@ -1264,13 +1401,13 @@ void AudioPlaybackEngine::PlayUrl(const BUrl &url, const char *title,
         errMsg.AddString("text", "Device in use, falling back to system default");
         fTarget.SendMessage(&errMsg);
       }
-      fPlayer = new BSoundPlayer(&raf, "Orchester", &_PlayBuffer, NULL, this);
+      fPlayer = new BSoundPlayer(&raf, kMixerName, &_PlayBuffer, NULL, this);
     }
   } else {
-    fPlayer = new BSoundPlayer(&raf, "Orchester", &_PlayBuffer, NULL, this);
+    fPlayer = new BSoundPlayer(&raf, kMixerName, &_PlayBuffer, NULL, this);
   }
 #else
-  fPlayer = new BSoundPlayer(&raf, "Orchester", &_PlayBuffer, NULL, this);
+  fPlayer = new BSoundPlayer(&raf, kMixerName, &_PlayBuffer, NULL, this);
 #endif
 
   if (!fPlayer || fPlayer->InitCheck() != B_OK) {
@@ -1564,6 +1701,14 @@ void AudioPlaybackEngine::SeekTo(bigtime_t pos) {
   if (!fTrack || fIsStreaming.load(std::memory_order_relaxed) || fIsMidiPlaying)
     return;
 
+  // The prebuffer thread is reading fTrack; hand the seek to it. The position
+  // is corrected to the frame actually reached when the callback picks it up.
+  if (fUsePrebuffer.load(std::memory_order_relaxed)) {
+    fPendingSeek.store(pos, std::memory_order_relaxed);
+    fCurrentPos = pos;
+    return;
+  }
+
   bigtime_t newTime = pos;
   status_t ret = fTrack->SeekToTime(&newTime, B_MEDIA_SEEK_CLOSEST_BACKWARD);
   if (ret == B_OK) {
@@ -1785,6 +1930,14 @@ void AudioPlaybackEngine::_PlayBuffer(
 #endif
 
   if (self->fUsePrebuffer.load(std::memory_order_relaxed)) {
+    if (self->fFlushRequested.load(std::memory_order_relaxed)) {
+      while (self->fFlushSpin.test_and_set(std::memory_order_acquire))
+        ;
+      self->fPrebufferRing.DiscardTo(self->fFlushTo);
+      self->fCurrentPos = self->fFlushPos;
+      self->fFlushRequested.store(false, std::memory_order_relaxed);
+      self->fFlushSpin.clear(std::memory_order_release);
+    }
     size_t readBytes = self->fPrebufferRing.Read((uint8 *)buffer, size);
     if (readBytes > 0) {
       self->fZeroReadCount.store(0, std::memory_order_relaxed);

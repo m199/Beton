@@ -1,14 +1,23 @@
+/*
+ * Copyright 2005-2026, Daniel Weber.
+ * Copyright 2026, David Beckman.
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
 #ifndef BETON_MEDIA_LIBRARY_CACHE_H
 #define BETON_MEDIA_LIBRARY_CACHE_H
 
 #include "MediaItem.h"
 #include "Messages.h"
+#include <Directory.h>
+#include <Entry.h>
 #include <Looper.h>
 #include <MessageRunner.h>
 #include <Messenger.h>
 #include <String.h>
 #include <Query.h>
 #include <Volume.h>
+#include <deque>
 #include <map>
 #include <set>
 #include <vector>
@@ -93,6 +102,28 @@ public:
    */
   std::vector<MediaItem> AllEntries() const;
 
+  /**
+   * @brief True if @p path lies in the Trash of any mounted volume.
+   *
+   * Tracks moved to the Trash leave the library; the cache keeps their entry
+   * until the next full scan so that Undo can bring them back.
+   */
+  static bool IsInTrash(const BString &path);
+
+  /** @brief True if @p path has an extension the library plays. */
+  static bool IsAudioFile(const BString &path) {
+    return _IsSupportedAudioFile(path);
+  }
+
+  /**
+   * @brief Loads configured source directories into `outDirs`.
+   * @param outDirs Output vector with absolute directory paths.
+   *
+   * Static: it only reads the settings files, so other parts of the app (the
+   * CD ripper) can ask which folders make up the library.
+   */
+  static void LoadDirectories(std::vector<BString> &outDirs);
+
 private:
   /** @brief Outcome of reading the on-disk cache file. */
   enum CacheLoadResult {
@@ -136,7 +167,8 @@ private:
    * reader off into nonsense.
    * @return Offset of the next parseable record, or -1 if there is none.
    */
-  off_t _ResyncToNextRecord(BFile &file, off_t after, off_t fileSize);
+  off_t _ResyncToNextRecord(BFile &file, off_t after, off_t fileSize,
+                            uint32 version);
 
   /**
    * @brief Drops salvaged entries that disagree with the file on disk.
@@ -188,11 +220,6 @@ private:
    */
   void AddOrUpdateEntry(const MediaItem &entry);
 
-  /**
-   * @brief Loads configured source directories into `outDirs`.
-   * @param outDirs Output vector with absolute directory paths.
-   */
-  void LoadDirectories(std::vector<BString> &outDirs);
 
   /**
    * @brief Marks all entries below a base path as currently unavailable.
@@ -204,6 +231,13 @@ private:
   ///@{
   /** @brief Path-indexed media entries (`key == MediaItem::path`). */
   std::map<BString, MediaItem> fEntries;
+  /** The sidebar's folders. Their tracks mirror the folder: a file gone from
+   *  one leaves the library, where other tracks are only marked missing. */
+  std::vector<BString> fSidebarFolders;
+  /** Entries taken out by Remove from Library, newest last, so Undo can put
+   *  them back as they were (a missing track can't be rescanned). Kept for
+   *  as many removals as the undo history holds; memory only. */
+  std::deque<std::map<BString, MediaItem>> fRemovedBatches;
   /** @brief UI/update target messenger (usually `MainWindow`). */
   BMessenger fTarget;
   /** @brief Absolute path of the on-disk cache file. */
@@ -255,8 +289,28 @@ private:
    */
   bool _RereadBfsAttributes(MediaItem &item);
 
-  void _WatchDirRecursive(BDirectory &dir);
+  /** Watches every folder in the sidebar folders, so files added, removed
+   *  or moved there reach the library while Beton runs. */
+  void _WatchSidebarFolders();
+  /** Watches @p dir and the folders below it; adds the audio files found to
+   *  @p audioFiles when given. */
+  void _WatchDirTree(const BEntry &dir, std::vector<BString> *audioFiles);
+  /** Stops watching @p dir and the folders below it. */
+  void _UnwatchDirTree(const BEntry &dir);
+  /** Watches the audio files below @p dir for changes (the open folder). */
+  void _WatchFilesRecursive(BDirectory &dir);
+  void _WatchFile(const BEntry &file);
+  /** The path of folder @p dir, or false if it can't be found. */
+  static bool _DirPath(dev_t device, ino_t dir, BString &out);
+  /** The library key of the file @p name in folder @p dir (node @p node),
+   *  or an empty string if it isn't in the library. */
+  BString _FindEntryKey(dev_t device, ino_t dir, const char *name,
+                        ino_t node) const;
+  /** Moves a library entry to a new path, keeping what it knows. */
+  void _RekeyEntry(const BString &from, const BString &to);
   void _HandleNodeMonitor(BMessage *msg, int32 opcode);
+  void _HandleEntryArrived(const entry_ref &ref);
+  bool _IsWatched(const node_ref &nref) const;
   void _ScanAndAddFile(const BString &pathStr);
   void _RemoveFileFromCache(const BString &pathStr);
   static bool _IsSupportedAudioFile(const BString &path);
@@ -308,7 +362,21 @@ private:
    */
   void _ProcessFileScanChunk();
 
-  std::vector<node_ref> fWatchedNodes;
+  /** Folders watched for files coming and going: every folder in the
+   *  sidebar folders, for as long as Beton runs. */
+  std::set<node_ref> fWatchedDirs;
+  /** Audio files watched for changes: only those in the open folder. */
+  std::set<node_ref> fWatchedFiles;
+  /** The folder open in the sidebar, or empty. */
+  BString fShownFolder;
+  /** Folders that couldn't be watched (the node monitor limit). */
+  int32 fWatchFailures = 0;
+  /** False until the window has sent the sidebar folders once. */
+  bool fSidebarFoldersKnown = false;
+  /** Where Beton is moving files itself (Move File To). A track moved out of
+   *  a sidebar folder that way stays in the library; moved any other way,
+   *  it leaves. */
+  std::set<BString> fExpectedMoves;
   /** @brief Armed one-shot save runner, or NULL when no save is pending. */
   BMessageRunner *fSaveThrottle{nullptr};
 
@@ -371,6 +439,9 @@ private:
 
   /** @brief Live scanners, keyed by the id handed out at launch. */
   std::map<int32, MediaLibraryScanner *> fScanners;
+  /// Folder each ScanPath() scanner is working on, so selecting a folder
+  /// again while it is still being scanned doesn't start another full scan.
+  std::map<int32, BString> fFolderScanPaths;
 
   /** @brief Per-scanner counters, keyed by the id handed out at launch. */
   std::map<int32, ScanCounters> fScanCounters;
@@ -394,6 +465,9 @@ private:
   std::vector<BString> fPendingFileScans;
   /** @brief Sidebar playlist index each queued path came from. */
   std::vector<int32> fPendingFileScanPlaylists;
+  /** Queued paths to read again even though the library has them (a rip
+   *  writes tags and loudness after the file appears). */
+  std::set<BString> fRefreshPaths;
   /** @brief Read cursor into `fPendingFileScans`. */
   size_t fFileScanIndex{0};
   /** @brief True while chunks are being processed (a step message is in flight). */

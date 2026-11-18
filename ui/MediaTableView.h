@@ -1,3 +1,9 @@
+/*
+ * Copyright 2005-2026, Daniel Weber.
+ * Copyright 2026, David Beckman.
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
 #ifndef BETON_MEDIA_TABLE_VIEW_H
 #define BETON_MEDIA_TABLE_VIEW_H
 
@@ -60,6 +66,9 @@ public:
 
   const MediaItem *SelectedItem() const;
   const MediaItem *ItemAt(int32 index) const;
+  /** The items of the rows scrolled into view, top to bottom. */
+  void GetVisibleItems(std::vector<const MediaItem *> &out);
+  bool HasPath(const BString &path) const;
   bool IsRowMissing(BRow *row) const;
 
   /**
@@ -119,6 +128,12 @@ public:
     }
   }
   bool FastEditEnabled() const { return fFastEditEnabled; }
+
+  /**
+   * @brief Allows or blocks rating changes from the keyboard and context menu.
+   * Off for sources whose tracks cannot take one (Radio, DLNA, Audio CD).
+   */
+  void SetRatingEditable(bool editable) { fRatingEditable = editable; }
 
   void SetFolderMode(bool folderMode) { fFolderMode = folderMode; }
 
@@ -213,11 +228,19 @@ private:
   /** @name Cell Inline Editing */
   ///@{
   bool fFastEditEnabled{false};
+  bool fRatingEditable{true};
   bool fFolderMode{false};
   CellTextControl *fActiveEditor{nullptr};
+  /// The row the edit began on. The library can rebuild or drop rows while
+  /// an editor is open (a tag write refreshes the view), so it may be gone:
+  /// read it only through _LiveEditingRow().
   BRow *fEditingRow{nullptr};
   int32 fEditingColIdx{-1};
   BString fEditingPathPrefix; ///< Volume mount point hidden from the path editor
+  BString fEditingPath;     ///< The edited track's file, as the edit began
+  BString fEditingOriginal; ///< The cell's text as the edit began
+  BRow *fCommittedRow{nullptr}; ///< The live row of the last commit, or null
+  BRow *_LiveEditingRow();
   ///@}
 };
 

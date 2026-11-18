@@ -1,3 +1,9 @@
+/*
+ * Copyright 2005-2026, Daniel Weber.
+ * Copyright 2026, David Beckman.
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
 #include "LibraryController.h"
 #include "LibraryMessageHandler.h"
 
@@ -7,6 +13,7 @@
 #include "PlaylistSelectionController.h"
 #include "LibraryBrowserController.h"
 #include "MediaTableView.h"
+#include "PlaybackQueueManager.h"
 
 #include <Message.h>
 
@@ -92,16 +99,61 @@ bool LibraryMessageHandler::HandleMessage(BMessage *msg) {
         fWindow->fCurrentPlaylistName == folder && fWindow->fLibraryManager) {
       MediaTableView *cv = fWindow->fLibraryManager->ContentView();
       if (cv) {
-        int32 index = -1;
-        msg->FindInt32("index", &index);
-        cv->AddEntry(MediaTableView::UnarchiveItem(msg), index);
+        // The file may already be back with its row, e.g. restored from the
+        // Trash by Tracker before this Undo; don't show it twice.
+        MediaItem item = MediaTableView::UnarchiveItem(msg);
+        if (!cv->HasPath(item.path)) {
+          int32 index = -1;
+          msg->FindInt32("index", &index);
+          cv->AddEntry(item, index);
+        }
       }
     }
     break;
   }
 
+  case MSG_ANALYZE_LOUDNESS: {
+    fWindow->fLibraryController->AnalyzeLoudness(msg);
+    break;
+  }
+
+  case MSG_LOUDNESS_PROGRESS: {
+    fWindow->fLibraryController->HandleLoudnessResult(msg);
+    break;
+  }
+
+  case MSG_CD_RIP_IMPORT: {
+    fWindow->fLibraryController->ImportRippedFiles(msg);
+    break;
+  }
+
+  case MSG_CD_RIP_PLAY: {
+    std::vector<MediaItem> items;
+    BString path;
+    for (int32 i = 0; msg->FindString("path", i, &path) == B_OK; i++) {
+      MediaItem item;
+      item.path = path;
+      msg->FindString("title", i, &item.title);
+      msg->FindString("artist", i, &item.artist);
+      msg->FindString("album", i, &item.album);
+      msg->FindInt32("track", i, &item.track);
+      msg->FindInt32("duration", i, &item.duration);
+      items.push_back(item);
+    }
+    int32 index = 0;
+    msg->FindInt32("index", &index);
+    if (fWindow->fPlaybackQueueManager)
+      fWindow->fPlaybackQueueManager->PlayItems(items, index);
+    break;
+  }
+
   case MSG_FILE_MOVE: {
     fWindow->fLibraryController->HandleFileMove(msg);
+    break;
+  }
+
+  case MSG_FILE_MOVED: {
+    fWindow->fLibraryController->HandleFileMoved(msg);
     break;
   }
 

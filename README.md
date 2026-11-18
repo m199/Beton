@@ -17,6 +17,7 @@ A native music player for Haiku.
 *   Playlist creation
 *   Reads and writes tags, with bfs attribute synchronization
 *   MusicBrainz metadata lookup
+*   Audio CD ripping to MP3 (320 kbps), FLAC or WAV, with folder and file naming patterns
 
 ## Development
 

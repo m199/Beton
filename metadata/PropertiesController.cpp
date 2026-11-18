@@ -1,3 +1,9 @@
+/*
+ * Copyright 2005-2026, Daniel Weber.
+ * Copyright 2026, David Beckman.
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
 #include "PropertiesController.h"
 
 #include "MainWindow.h"
@@ -272,7 +278,10 @@ void PropertiesController::SetRating(BMessage *msg) {
     if (path.InitCheck() != B_OK)
       continue;
 
-    if (access(path.Path(), W_OK) != 0) {
+    // An audio CD claims to be writable, but its tracks have no tags to
+    // update, and reading one here stalls the window behind the drive.
+    if (access(path.Path(), W_OK) != 0 ||
+        MetadataTagIO::IsCddaVolume(path)) {
       skipped++;
       continue;
     }

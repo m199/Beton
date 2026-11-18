@@ -1,3 +1,9 @@
+/*
+ * Copyright 2005-2026, Daniel Weber.
+ * Copyright 2026, David Beckman.
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
 #include "SettingsController.h"
 
 #include "Config.h"
@@ -82,8 +88,13 @@ void SettingsController::SaveSettingsToMessage(BMessage &state) {
     state.AddInt32("repeat_mode",
                    fWindow->fPlaybackQueueManager->RepeatModeValue());
   }
+  if (fWindow->fPlaybackEngine)
+    state.AddInt32("replaygain_mode",
+                   fWindow->fPlaybackEngine->ReplayGainModeValue());
   state.AddBool("show_tooltips", fWindow->fShowTooltips);
   state.AddBool("fast_edit_enabled", fWindow->fFastEditEnabled);
+  state.AddBool("gain_prefetch", fWindow->fGainPrefetch);
+  state.AddBool("gain_write_files", fWindow->fGainWriteFiles);
 
   if (fWindow->fIsMuted) {
     state.AddInt32("volume_level", (int32)fWindow->fPreMuteVolume);
@@ -163,6 +174,15 @@ void SettingsController::LoadSettings() {
  * @brief Reads saved values from the settings archive message.
  */
 void SettingsController::LoadSettingsFromMessage(BMessage &state) {
+  // Settings saved by an older Beton lack newer keys; those keep their
+  // defaults. Haiku's BMessage::Find*() zeroes its output before looking,
+  // so reading straight into a member would turn a missing flag off.
+  auto readBool = [&state](const char *name, bool &field) {
+    bool value;
+    if (state.FindBool(name, &value) == B_OK)
+      field = value;
+  };
+
   int32 version = 0;
   state.FindInt32("settings_version", &version);
 
@@ -180,10 +200,10 @@ void SettingsController::LoadSettingsFromMessage(BMessage &state) {
       fWindow->fViewInfoItem->SetMarked(fWindow->fShowFileInfo);
   }
 
-  state.FindBool("show_filters_library", &fWindow->fShowFiltersLibrary);
-  state.FindBool("show_filters_playlist", &fWindow->fShowFiltersPlaylist);
-  state.FindBool("show_filters_radio", &fWindow->fShowFiltersRadio);
-  state.FindBool("show_filters_dlna", &fWindow->fShowFiltersDlna);
+  readBool("show_filters_library", fWindow->fShowFiltersLibrary);
+  readBool("show_filters_playlist", fWindow->fShowFiltersPlaylist);
+  readBool("show_filters_radio", fWindow->fShowFiltersRadio);
+  readBool("show_filters_dlna", fWindow->fShowFiltersDlna);
 
   if (fWindow->fNowPlayingInfoPanel) {
     fWindow->fNowPlayingInfoPanel->SetCoverVisible(fWindow->fShowCoverArt);
@@ -195,9 +215,9 @@ void SettingsController::LoadSettingsFromMessage(BMessage &state) {
   if (fWindow->fPlaylistLibrary)
     fWindow->fPlaylistLibrary->LoadFolderSources(state);
 
-  state.FindBool("use_custom_seekbar_color", &fWindow->fUseCustomSeekBarColor);
-  state.FindBool("use_seekbar_color_for_selection",
-                 &fWindow->fUseSeekBarColorForSelection);
+  readBool("use_custom_seekbar_color", fWindow->fUseCustomSeekBarColor);
+  readBool("use_seekbar_color_for_selection",
+           fWindow->fUseSeekBarColorForSelection);
 
   rgb_color *color;
   ssize_t size;
@@ -230,6 +250,21 @@ void SettingsController::LoadSettingsFromMessage(BMessage &state) {
     if (fWindow->fPlaybackQueueManager)
       fWindow->fPlaybackQueueManager->SetShuffleEnabled(shuffleEnabled);
   }
+
+  int32 replayGainMode;
+  if (state.FindInt32("replaygain_mode", &replayGainMode) != B_OK)
+    replayGainMode = AudioPlaybackEngine::kReplayGainAuto;
+  fWindow->SetReplayGainMode(replayGainMode);
+
+  bool gainSetting;
+  if (state.FindBool("gain_prefetch", &gainSetting) == B_OK)
+    fWindow->fGainPrefetch = gainSetting;
+  if (state.FindBool("gain_write_files", &gainSetting) == B_OK)
+    fWindow->fGainWriteFiles = gainSetting;
+  if (fWindow->fGainPrefetchItem)
+    fWindow->fGainPrefetchItem->SetMarked(fWindow->fGainPrefetch);
+  if (fWindow->fGainWriteItem)
+    fWindow->fGainWriteItem->SetMarked(fWindow->fGainWriteFiles);
 
   int32 repeatMode = PlaybackQueueManager::RepeatOff;
   if (state.FindInt32("repeat_mode", &repeatMode) == B_OK) {
@@ -287,7 +322,7 @@ void SettingsController::LoadSettingsFromMessage(BMessage &state) {
   state.FindString("active_dlna_uuid", &fWindow->fInitialDlnaUuid);
 
 #if ENABLE_LOCAL_OUTPUT
-  state.FindBool("show_local_output_btn", &fWindow->fShowLocalOutputBtn);
+  readBool("show_local_output_btn", fWindow->fShowLocalOutputBtn);
   
   int32 targetVal = 0;
   if (state.FindInt32("local_output_target", &targetVal) == B_OK) {

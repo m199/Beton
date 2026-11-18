@@ -1,3 +1,9 @@
+/*
+ * Copyright 2005-2026, Daniel Weber.
+ * Copyright 2026, David Beckman.
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
 
 #include "MediaTableView.h"
 #include "MainWindow.h"
@@ -430,6 +436,9 @@ public:
     if (bytes[0] != B_LEFT_ARROW && bytes[0] != B_RIGHT_ARROW)
       return B_DISPATCH_MESSAGE;
 
+    if (!fOwner->fRatingEditable)
+      return B_DISPATCH_MESSAGE;
+
     int32 modifiers = 0;
     msg->FindInt32("modifiers", &modifiers);
     if (modifiers & (B_OPTION_KEY | B_COMMAND_KEY | B_CONTROL_KEY))
@@ -547,6 +556,33 @@ private:
 };
 
 /**
+ * @class GainField
+ * @brief Shows a track's ReplayGain and sorts by its value, not its text.
+ */
+class GainField : public StatusStringField {
+public:
+  GainField(float gain, bool missing, std::shared_ptr<BString> path,
+            SourceType source)
+      : StatusStringField(_Text(gain).String(), missing, path, source),
+        fGain(gain) {}
+  float Gain() const { return fGain; }
+
+private:
+  static BString _Text(float gain) {
+    BString text;
+    if (!std::isnan(gain))
+      text.SetToFormat("%+.2f dB", gain);
+    return text;
+  }
+  float fGain;
+};
+
+static BField *MakeGainField(const MediaItem &mi, bool missing,
+                             std::shared_ptr<BString> path, SourceType source) {
+  return new GainField(mi.rgTrackGain, missing, path, source);
+}
+
+/**
  * @class StatusIntegerField
  * @brief BIntegerField subclass that tracks whether the file is missing.
  */
@@ -573,6 +609,17 @@ private:
   int32 fSortDisc;
   int32 fSortTrack;
 };
+
+/**
+ * Text color for a track whose file is missing: the row's own text color
+ * pulled halfway toward its background. A fixed tint of the panel color
+ * (what this was) all but vanished on the list's background.
+ */
+static rgb_color MissingTextColor(BView *parent) {
+  const rgb_color text = parent->HighColor();
+  const rgb_color back = parent->LowColor();
+  return mix_color(text, back, 110);
+}
 
 /**
  * @class StatusStringColumn
@@ -632,8 +679,7 @@ public:
         }
       }
     } else if (isGray) {
-      parent->SetHighColor(tint_color(ui_color(B_PANEL_BACKGROUND_COLOR),
-                                      B_DISABLED_LABEL_TINT));
+      parent->SetHighColor(MissingTextColor(parent));
     }
 
     if (field)
@@ -650,6 +696,28 @@ private:
   BString fAttrName;
   MediaTableView *fOwner = nullptr;
   BString fTitle;
+};
+
+/**
+ * @class GainColumn
+ * @brief ReplayGain track gain; numeric sort, unmeasured tracks last.
+ */
+class GainColumn : public StatusStringColumn {
+public:
+  GainColumn(const char *title, float width, float minWidth, float maxWidth)
+      : StatusStringColumn(title, width, minWidth, maxWidth, B_TRUNCATE_END,
+                           nullptr, B_ALIGN_RIGHT) {}
+
+  int CompareFields(BField *field1, BField *field2) override {
+    GainField *a = dynamic_cast<GainField *>(field1);
+    GainField *b = dynamic_cast<GainField *>(field2);
+    if (a == nullptr || b == nullptr)
+      return StatusStringColumn::CompareFields(field1, field2);
+    const bool aNone = std::isnan(a->Gain()), bNone = std::isnan(b->Gain());
+    if (aNone || bNone)
+      return aNone == bNone ? 0 : (aNone ? 1 : -1);
+    return a->Gain() < b->Gain() ? -1 : (a->Gain() > b->Gain() ? 1 : 0);
+  }
 };
 
 /**
@@ -708,8 +776,7 @@ public:
         }
       }
     } else if (isGray) {
-      parent->SetHighColor(tint_color(ui_color(B_PANEL_BACKGROUND_COLOR),
-                                      B_DISABLED_LABEL_TINT));
+      parent->SetHighColor(MissingTextColor(parent));
     }
 
     if (field)
@@ -971,6 +1038,7 @@ MediaTableView::MediaTableView(const char *name)
                                    B_TRUNCATE_END),
             10);
   AddColumn(new RatingColumn(B_TRANSLATE("Rating"), 80, 60, 100), 11);
+  AddColumn(new GainColumn(B_TRANSLATE("Gain"), 75, 50, 110), 13);
   AddColumn(new StatusIntegerColumn(B_TRANSLATE("Sort"), 50, 20, 80,
                                     "", B_ALIGN_RIGHT),
             12);
@@ -1162,6 +1230,9 @@ void MediaTableView::AddEntry(const MediaItem &mi, int32 index) {
   row->SetField(new StatusIntegerField(fIsPlaylistMode ? CountRows() + 1 : 0,
                                        m, src, pathPtr),
                 12);
+  // After field 12: BRow::SetField inserts into a list and cannot skip an
+  // index, so a field set past the end is silently dropped.
+  row->SetField(MakeGainField(mi, m, pathPtr, src), 13);
 
   if (index >= 0 && index <= CountRows())
     AddRow(row, index);
@@ -1199,6 +1270,10 @@ void MediaTableView::ArchiveItem(const MediaItem &mi, BMessage *out) {
   out->AddInt64("mtime", mi.mtime);
   out->AddInt64("inode", mi.inode);
   out->AddBool("missing", mi.missing);
+  out->AddFloat("rgTrackGain", mi.rgTrackGain);
+  out->AddFloat("rgTrackPeak", mi.rgTrackPeak);
+  out->AddFloat("rgAlbumGain", mi.rgAlbumGain);
+  out->AddFloat("rgAlbumPeak", mi.rgAlbumPeak);
 }
 
 MediaItem MediaTableView::UnarchiveItem(const BMessage *in) {
@@ -1236,6 +1311,7 @@ MediaItem MediaTableView::UnarchiveItem(const BMessage *in) {
   if (in->FindInt64("mtime", &i64) == B_OK) mi.mtime = i64;
   if (in->FindInt64("inode", &i64) == B_OK) mi.inode = i64;
   if (in->FindBool("missing", &b) == B_OK) mi.missing = b;
+  mi.ReadGainFields(*in);
   return mi;
 }
 
@@ -1290,6 +1366,7 @@ void MediaTableView::UpdateItem(const MediaItem &mi, const BString *matchPath) {
       mr->SetField(new StatusIntegerField(fIsPlaylistMode ? i + 1 : 0, m, src,
                                           pathPtr),
                    12);
+      mr->SetField(MakeGainField(mi, m, pathPtr, src), 13);
 
       InvalidateRow(mr);
       break;
@@ -1403,6 +1480,7 @@ BRow *MediaTableView::_CreateRow(const MediaItem &mi, int32 playlistIndex) {
                                            : 0,
                                        m, src, pathPtr),
                 12);
+  row->SetField(MakeGainField(mi, m, pathPtr, src), 13);
 
   return row;
 }
@@ -1481,7 +1559,19 @@ void MediaTableView::_AddBatch(size_t count) {
           // ScrollTo(BRow*) only scrolls minimally, which would leave
           // this row at the bottom edge; scroll explicitly so the
           // previously top-visible row is at the top again.
-          ScrollTo(BPoint(0, rowTop));
+          //
+          // Vertically only. The header owns the horizontal position: the
+          // horizontal scroll bar scrolls it, and it moves the rows by the
+          // difference (TitleView::ScrollTo in Haiku's ColumnListView.cpp).
+          // Setting the rows to x 0 behind its back, with the list
+          // scrolled sideways, left them that far off from then on: after
+          // a tag edit rebuilt the list, scrolling back left drew the rows
+          // two columns right of their headers over an unpainted strip
+          // (2026-11-17).
+          float left = 0;
+          if (BView *outline = ScrollView())
+            left = outline->Bounds().left;
+          ScrollTo(BPoint(left, rowTop));
           scrolled = true;
         }
       }
@@ -1556,6 +1646,7 @@ void MediaTableView::SaveScrollState() {
  */
 bool MediaTableView::InitiateDrag(BPoint point, bool wasSelected) {
   BMessage dragMsg(B_SIMPLE_DATA);
+  dragMsg.AddBool("beton_tracks", true);
 
   BRow *firstSelected = CurrentSelection();
   if (firstSelected) {
@@ -1863,8 +1954,8 @@ void MediaTableView::MessageReceived(BMessage *msg) {
       BMessage filesMsg;
       BuildFilesMessage(this, filesMsg);
 
-      bool isReadOnly = false;
-      {
+      bool isReadOnly = !fRatingEditable;
+      if (!isReadOnly) {
         int32 i = 0;
         entry_ref ref;
         while (filesMsg.FindRef("refs", i++, &ref) == B_OK) {
@@ -1893,6 +1984,17 @@ void MediaTableView::MessageReceived(BMessage *msg) {
         ratingMenu->AddItem(new BMenuItem(label.String(), msg));
       }
       menu.AddItem(ratingMenu);
+
+      {
+        BMessage *m = new BMessage(MSG_ANALYZE_LOUDNESS);
+        if (filesMsg.HasRef("refs"))
+          m->AddMessage("files", &filesMsg);
+        BMenuItem *item =
+            new BMenuItem(B_TRANSLATE("Analyze Loudness (ReplayGain)"), m);
+        // Writes tags, so like Rating it needs writable files.
+        item->SetEnabled(!isReadOnly && filesMsg.HasRef("refs"));
+        menu.AddItem(item);
+      }
 
       menu.AddSeparatorItem();
       {
@@ -1930,6 +2032,14 @@ void MediaTableView::MessageReceived(BMessage *msg) {
       }
 
       menu.AddSeparatorItem();
+      {
+        // Audio CD tracks aren't library tracks.
+        auto *mw = dynamic_cast<MainWindow *>(Window());
+        BMenuItem *item = new BMenuItem(B_TRANSLATE("Remove from Library"),
+                                        new BMessage(MSG_LIBRARY_REMOVE));
+        item->SetEnabled(mw == nullptr || !mw->IsCDMode());
+        menu.AddItem(item);
+      }
       menu.AddItem(new BMenuItem(B_TRANSLATE("Move File To..."),
                                  new BMessage(MSG_MOVE_TO)));
       menu.AddItem(new BMenuItem(B_TRANSLATE("Move File To Trash"),
@@ -2011,12 +2121,15 @@ void MediaTableView::MessageReceived(BMessage *msg) {
     msg->FindInt32("move", &move);
     bool focusLoss = false;
     msg->FindBool("focus_loss", &focusLoss);
-    BRow *editRow = fEditingRow;
     int32 editColIdx = fEditingColIdx;
     BView *targetView = fActiveEditor ? fActiveEditor->Parent() : ScrollView();
-    bool moving = move != 0 && editRow;
+    bool moving = move != 0 && fEditingRow;
     CommitCellEdit(!moving && !focusLoss);
-    if (moving) {
+    // the row as it is after the commit: the view may have rebuilt it
+    BRow *editRow = fCommittedRow;
+    if (moving && !editRow)
+      MakeFocus(true);
+    else if (moving) {
       if (!StartAdjacentCellEdit(editRow, editColIdx, move, targetView))
         MakeFocus(true);
       SetFocusRow(editRow, false);
@@ -2076,6 +2189,37 @@ const MediaItem *MediaTableView::ItemAt(int32 index) const {
   if (row)
     return &row->Item();
   return nullptr;
+}
+
+void MediaTableView::GetVisibleItems(std::vector<const MediaItem *> &out) {
+  out.clear();
+  BView *outline = ScrollView();
+  if (outline == nullptr || CountRows() == 0)
+    return;
+  const BRect visible = outline->Bounds();
+  BRow *top = RowAt(BPoint(visible.left, visible.top));
+  if (top == nullptr)
+    return;
+  // Rows are all the same height, with a one-pixel gap between them.
+  const int32 first = IndexOf(top);
+  const float step = top->Height() + 1;
+  const int32 count = (int32)(visible.Height() / step) + 2;
+  for (int32 i = first; i >= 0 && i < first + count; i++) {
+    if (const MediaItem *item = ItemAt(i))
+      out.push_back(item);
+  }
+}
+
+/**
+ * @brief Returns true if a row for @a path is in the view.
+ */
+bool MediaTableView::HasPath(const BString &path) const {
+  for (int32 i = 0; i < CountRows(); ++i) {
+    const MediaItem *mi = ItemAt(i);
+    if (mi && mi->path == path)
+      return true;
+  }
+  return false;
 }
 
 /**
@@ -2397,6 +2541,16 @@ void MediaTableView::_PreSortPendingItems() {
     case 11:
       result = compareInt(a.rating, b.rating);
       break;
+    case 13: {
+      // ReplayGain; unmeasured tracks last.
+      const bool aNone = !a.HasTrackGain(), bNone = !b.HasTrackGain();
+      if (aNone || bNone)
+        result = aNone == bNone ? 0 : (aNone ? 1 : -1);
+      else
+        result = a.rgTrackGain < b.rgTrackGain ? -1
+                 : (a.rgTrackGain > b.rgTrackGain ? 1 : 0);
+      break;
+    }
     default:
       return false;
     }
@@ -2546,6 +2700,11 @@ void MediaTableView::StartCellEdit(BRow *row, BColumn *column, int32 colIdx, flo
   } else if (auto *ifld = dynamic_cast<BIntegerField *>(field)) {
     initialText << ifld->Value();
   }
+  // Kept, so the commit needs nothing from the row (_LiveEditingRow())
+  fEditingOriginal = initialText;
+  fEditingPath = "";
+  if (MediaRow *mr = dynamic_cast<MediaRow *>(row))
+    fEditingPath = mr->Item().path;
 
   fEditingPathPrefix = "";
   if (colIdx == 10) {
@@ -2623,17 +2782,11 @@ void MediaTableView::CommitCellEdit(bool restoreFocus) {
   BView *editorParent = editor->Parent();
 
   BString newText = editor->Text();
-
-  BString originalText;
-  if (fEditingRow) {
-    BField *field = fEditingRow->GetField(fEditingColIdx);
-    if (auto *sf = dynamic_cast<BStringField *>(field))
-      originalText = sf->String();
-    else if (auto *ifld = dynamic_cast<BIntegerField *>(field))
-      originalText << ifld->Value();
-    if (fEditingColIdx == 10 && !fEditingPathPrefix.IsEmpty())
-      originalText.Prepend(fEditingPathPrefix);
-  }
+  // As the edit began: the row may have been rebuilt since, already showing
+  // what an earlier edit of this track wrote
+  BString originalText = fEditingOriginal;
+  fEditingRow = _LiveEditingRow();
+  fCommittedRow = fEditingRow;
 
   BPoint scrollPos(0, 0);
   if (BView *outline = ScrollView()) {
@@ -2664,49 +2817,84 @@ void MediaTableView::CommitCellEdit(bool restoreFocus) {
     return;
   }
 
-  if (fEditingRow) {
-    MediaRow *mr = dynamic_cast<MediaRow *>(fEditingRow);
-    if (mr) {
-      BString path = mr->Item().path;
-      const char *fieldName = FieldNameForColumn(fEditingColIdx);
-      if (fieldName && !path.IsEmpty()) {
-        if (fEditingColIdx == 10) {
-          // Path edits move the file on disk instead of writing tags.
-          BString newPath = newText;
-          if (!newPath.IsEmpty() && !fEditingPathPrefix.IsEmpty()) {
-            if (!newPath.StartsWith("/"))
-              newPath.Prepend("/");
-            newPath.Prepend(fEditingPathPrefix);
-          }
-          if (!newText.IsEmpty() && newPath != path) {
-            BMessage moveMsg(MSG_FILE_MOVE);
-            moveMsg.AddString("from", path);
-            moveMsg.AddString("to", newPath);
-            if (Window())
-              Window()->PostMessage(&moveMsg);
-          }
-        } else {
-          BMessage saveMsg(MSG_PROP_SAVE);
-          saveMsg.AddString("file", path);
-          saveMsg.AddString(fieldName, newText);
-          if (fFolderMode)
-            saveMsg.AddBool("force_tags", true);
-          if (Window())
-            Window()->PostMessage(&saveMsg);
-        }
+  // The track's file as the edit began: written even when its row is gone
+  BString path = fEditingPath;
+  const char *fieldName = FieldNameForColumn(fEditingColIdx);
+  if (fieldName && !path.IsEmpty()) {
+    if (fEditingColIdx == 10) {
+      // Path edits move the file on disk instead of writing tags.
+      BString newPath = newText;
+      if (!newPath.IsEmpty() && !fEditingPathPrefix.IsEmpty()) {
+        if (!newPath.StartsWith("/"))
+          newPath.Prepend("/");
+        newPath.Prepend(fEditingPathPrefix);
       }
+      if (!newText.IsEmpty() && newPath != path) {
+        BMessage moveMsg(MSG_FILE_MOVE);
+        moveMsg.AddString("from", path);
+        moveMsg.AddString("to", newPath);
+        if (Window())
+          Window()->PostMessage(&moveMsg);
+      }
+    } else {
+      BMessage saveMsg(MSG_PROP_SAVE);
+      saveMsg.AddString("file", path);
+      saveMsg.AddString(fieldName, newText);
+      if (fFolderMode)
+        saveMsg.AddBool("force_tags", true);
+      if (Window())
+        Window()->PostMessage(&saveMsg);
     }
   }
 
   fEditingRow = nullptr;
   fEditingColIdx = -1;
   fEditingPathPrefix = "";
+  fEditingPath = "";
+}
+
+/**
+ * @brief The row being edited, as it is now: the row the edit began on if it
+ * is still listed and still shows the same track, else the row now showing
+ * that track (the view was rebuilt), else null.
+ *
+ * The library drops or rebuilds rows while an editor is open. In Library
+ * mode a tag edit that changes a filter field has the content list rebuilt
+ * (LibraryController::HandleMediaItemFound posts MSG_VIEWS_REFRESH, as of
+ * eba3c9e): an artist edit did, and committing the title typed meanwhile read
+ * the deleted row and crashed (2026-11-17). fEditingRow is compared, never
+ * dereferenced, until it is found listed; a freed row's memory may hold
+ * another track's row by then, which the path check catches.
+ */
+BRow *MediaTableView::_LiveEditingRow() {
+  if (!fEditingRow)
+    return nullptr;
+  for (int32 i = 0; i < CountRows(); i++) {
+    BRow *row = RowAt(i);
+    if (row != fEditingRow)
+      continue;
+    if (fEditingPath.IsEmpty())
+      return row;
+    MediaRow *mr = dynamic_cast<MediaRow *>(row);
+    if (mr && mr->Item().path == fEditingPath)
+      return row;
+    break;
+  }
+  if (fEditingPath.IsEmpty())
+    return nullptr;
+  for (int32 i = 0; i < CountRows(); i++) {
+    const MediaItem *mi = ItemAt(i);
+    if (mi && mi->path == fEditingPath)
+      return RowAt(i);
+  }
+  return nullptr;
 }
 
 void MediaTableView::CancelCellEdit() {
   if (!fActiveEditor)
     return;
 
+  fEditingRow = _LiveEditingRow();
   RemoveEditorKeyFilter();
 
   CellTextControl *editor = fActiveEditor;

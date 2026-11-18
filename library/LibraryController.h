@@ -1,9 +1,21 @@
+/*
+ * Copyright 2005-2026, Daniel Weber.
+ * Copyright 2026, David Beckman.
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
 #ifndef BETON_LIBRARY_CONTROLLER_H
 #define BETON_LIBRARY_CONTROLLER_H
 
 #include <Message.h>
 #include <MessageRunner.h>
 #include <String.h>
+
+#include <atomic>
+#include <vector>
+
+class BFilePanel;
+class GainPrefetcher;
 
 class MainWindow;
 
@@ -43,6 +55,91 @@ public:
    * On failure nothing changes and the error is shown in the status bar.
    */
   void HandleFileMove(BMessage* msg);
+
+  /**
+   * @brief Follows a file another app moved out of the watched folder.
+   * @param msg MSG_FILE_MOVED from the cache, with "from" and "to" paths.
+   */
+  void HandleFileMoved(BMessage* msg);
+
+  /**
+   * @brief Adds files the CD ripper just wrote to the library.
+   * @param msg MSG_CD_RIP_IMPORT with one "path" per file.
+   */
+  void ImportRippedFiles(BMessage* msg);
+
+  /**
+   * @brief Removes the selected tracks from the library (and playlists),
+   *        after asking. Tracks in sidebar folders are skipped: they leave
+   *        the library when their files leave the folder.
+   */
+  void RemoveSelectedFromLibrary();
+
+  /** @brief Removes tracks whose files are gone, after asking. */
+  void RemoveMissingTracks();
+
+  /** @brief Adds a playlist's tracks that aren't in the library yet. */
+  void AddPlaylistTracks(const std::vector<BString> &paths);
+
+  /** @brief Redo of a removal: removes the "path"s without asking. */
+  void RemovePathsFromLibrary(const BMessage *msg);
+
+  /** @brief Undo of a removal: puts the "path"s back in the library, then
+   *         restores the playlists they were taken out of. */
+  void RestoreToLibrary(const BMessage *msg);
+
+  /** @brief Opens the File > Add to Library panel. */
+  void ShowAddToLibraryPanel();
+
+  /**
+   * @brief Adds the files in @p msg's "refs" to the library; folders are
+   *        searched with their subfolders, on a background thread.
+   */
+  void AddRefsToLibrary(const BMessage *msg);
+
+  /**
+   * @brief Puts the "refs" dropped on a sidebar folder into that "folder":
+   *        moved on the same disk, copied (on a thread) from another one.
+   *        Asks once when names are taken; undoable.
+   */
+  void DropIntoFolder(const BMessage *msg);
+  /** @brief The copy thread of DropIntoFolder() has finished. */
+  void FolderCopyDone(const BMessage *msg);
+
+  /** @brief True if Tracker's Copy or Cut put files on the clipboard. */
+  static bool ClipboardHasFiles();
+  /**
+   * @brief Pastes the files Tracker copied or cut into @p folder: copied
+   *        ones are copied, cut ones moved, as DropIntoFolder() does.
+   */
+  void PasteIntoFolder(const BString &folder);
+
+  /**
+   * @brief Measures the loudness of the selected files on a background
+   *        thread and writes ReplayGain tags into them.
+   * @param msg MSG_ANALYZE_LOUDNESS with a "files" message of refs.
+   *
+   * Track gain is written for every file. Album gain is written only when
+   * the selection holds every file of that album in its folder, so it never
+   * describes part of an album.
+   */
+  void AnalyzeLoudness(BMessage* msg);
+
+  /**
+   * @brief Stores gain values the loudness analysis wrote into a file.
+   * @param msg MSG_LOUDNESS_PROGRESS with "path" and rg* floats.
+   */
+  void HandleLoudnessResult(BMessage* msg);
+
+  /**
+   * @brief Tells the GainPrefetcher which tracks to measure: while local
+   *        music plays, the playing and next tracks and the rows on screen
+   *        that have no track gain. Called on a timer, when the setting
+   *        changes, when a track starts and when the list is refilled.
+   * @param listChanged The list was just refilled: queue its rows at once
+   *        instead of waiting a tick to see that it isn't being scrolled.
+   */
+  void UpdateGainPrefetch(bool listChanged = false);
 
   /**
    * @brief Handles initial cache-load completion and refreshes views.
@@ -138,6 +235,23 @@ public:
   void RebuildPathIndex();
 
 private:
+  static status_t _AddToLibraryThread(void *data);
+  BFilePanel *fAddPanel = nullptr;
+
+  std::vector<BString> _SidebarFolders() const;
+  /** Removes @p paths from the library and from playlists; @p recordUndo
+   *  adds the removal to Edit > Undo (not when replaying a Redo). */
+  void _RemoveFromLibrary(const std::vector<BString> &paths,
+                          bool recordUndo = true);
+
+  /** True while an AnalyzeLoudness() thread is running. */
+  std::atomic<bool> fLoudnessRunning{false};
+
+  /** Measures gain in the background; created when first needed. */
+  GainPrefetcher *fGainPrefetcher = nullptr;
+  /** Top visible row at the last gain prefetch tick, to see scrolling. */
+  BString fGainVisibleTop;
+
   /**
    * @brief Scans every configured source, sidebar folder and saved playlist.
    *

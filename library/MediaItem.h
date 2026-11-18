@@ -1,7 +1,16 @@
+/*
+ * Copyright 2005-2026, Daniel Weber.
+ * Copyright 2026, David Beckman.
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
 #ifndef BETON_MEDIA_ITEM_H
 #define BETON_MEDIA_ITEM_H
 
+#include <Message.h>
 #include <String.h>
+
+#include <cmath>
 
 /**
  * @struct MediaItem
@@ -60,6 +69,14 @@ struct MediaItem {
   BString acoustId; ///< AcoustID fingerprint identifier.
   ///@}
 
+  /** @name ReplayGain 2.0 (from REPLAYGAIN_* tags; NaN = not measured) */
+  ///@{
+  float rgTrackGain = NAN; ///< dB, relative to the -18 LUFS reference.
+  float rgTrackPeak = NAN; ///< Linear sample peak, 1.0 = full scale.
+  float rgAlbumGain = NAN; ///< dB, for the whole album.
+  float rgAlbumPeak = NAN; ///< Linear sample peak of the album.
+  ///@}
+
   /** @name Haiku BFS Attributes */
   ///@{
   int32 rating = 0; ///< Rating 1-10 (Media:Rating).
@@ -91,6 +108,40 @@ struct MediaItem {
    * @return True if path is not empty.
    */
   bool HasFile() const { return !path.IsEmpty(); }
+
+  /** @brief True if the track's loudness has been measured. */
+  bool HasTrackGain() const { return !std::isnan(rgTrackGain); }
+
+  /**
+   * @brief Integrated loudness in LUFS, derived from the track gain.
+   *
+   * For level matching (DJ autogain): the gain that brings this track to a
+   * target loudness T is T - LoudnessLufs(). NaN if not measured.
+   */
+  float LoudnessLufs() const {
+    return HasTrackGain() ? -18.0f - rgTrackGain : NAN;
+  }
+
+  /**
+   * @brief Copies the rg* fields present in @p msg into this item.
+   *
+   * Fields the message doesn't carry are left alone. This can't be a plain
+   * FindFloat() into the member: Haiku's BMessage::Find*() zeroes its output
+   * before looking, so a missing field would overwrite the gain with 0.0.
+   *
+   * @param index Item index within a batch message.
+   */
+  void ReadGainFields(const BMessage &msg, int32 index = 0) {
+    float value;
+    if (msg.FindFloat("rgTrackGain", index, &value) == B_OK)
+      rgTrackGain = value;
+    if (msg.FindFloat("rgTrackPeak", index, &value) == B_OK)
+      rgTrackPeak = value;
+    if (msg.FindFloat("rgAlbumGain", index, &value) == B_OK)
+      rgAlbumGain = value;
+    if (msg.FindFloat("rgAlbumPeak", index, &value) == B_OK)
+      rgAlbumPeak = value;
+  }
 };
 
 #endif // BETON_MEDIA_ITEM_H

@@ -1,3 +1,9 @@
+/*
+ * Copyright 2005-2026, Daniel Weber.
+ * Copyright 2026, David Beckman.
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
 #include "MediaLibraryScanner.h"
 #include "Config.h"
 #include "Debug.h"
@@ -172,7 +178,7 @@ void MediaLibraryScanner::ProcessFile(BEntry &entry) {
   fFoundFiles++;
   ReportProgress();
 
-  BString title, artist, album, genre;
+  BString title, artist, album, albumArtist, genre;
   int32 year = 0;
   int32 track = 0;
   int32 disc = 0;
@@ -215,13 +221,16 @@ void MediaLibraryScanner::ProcessFile(BEntry &entry) {
           }
         };
 
-        BString localMbTrackId, localMbAlbumId, localMbArtistId;
-        getProp("MUSICBRAINZ_TRACKID", localMbTrackId);
-        getProp("MUSICBRAINZ_ALBUMID", localMbAlbumId);
-        getProp("MUSICBRAINZ_ARTISTID", localMbArtistId);
+        // TagLib maps TPE2 (ID3v2), ALBUMARTIST (Vorbis) and aART (MP4)
+        // all to ALBUMARTIST. The library groups albums by album artist, so
+        // without it a compilation splits into one album per track artist.
+        getProp("ALBUMARTIST", albumArtist);
+        if (albumArtist.IsEmpty())
+          getProp("ALBUM ARTIST", albumArtist);
 
-        if (!localMbArtistId.IsEmpty())
-          mbArtistId = localMbArtistId;
+        getProp("MUSICBRAINZ_TRACKID", mbTrackId);
+        getProp("MUSICBRAINZ_ALBUMID", mbAlbumId);
+        getProp("MUSICBRAINZ_ARTISTID", mbArtistId);
       }
 
       if (!f.isNull() && f.audioProperties()) {
@@ -280,6 +289,7 @@ void MediaLibraryScanner::ProcessFile(BEntry &entry) {
   item.title = title;
   item.artist = artist;
   item.album = album;
+  item.albumArtist = albumArtist;
   item.genre = genre;
   item.year = year;
   item.track = track;
@@ -292,6 +302,14 @@ void MediaLibraryScanner::ProcessFile(BEntry &entry) {
   item.mbTrackId = mbTrackId;
   item.mbAlbumId = mbAlbumId;
   item.mbArtistId = mbArtistId;
+  ReplayGainInfo rg;
+  if (!isMidiFile && MetadataTagIO::ReadReplayGain(path, rg)) {
+    item.rgTrackGain = rg.trackGain;
+    item.rgTrackPeak = rg.trackPeak;
+    item.rgAlbumGain = rg.albumGain;
+    item.rgAlbumPeak = rg.albumPeak;
+  }
+
   if (hasBfsData && bfsData.rating > 0) {
     item.rating = bfsData.rating;
     DEBUG_PRINT("Read rating %d (BFS) for %s\n", (int)item.rating,
@@ -414,6 +432,11 @@ void MediaLibraryScanner::FlushBatch() {
     msg.AddString("title", item.title);
     msg.AddString("artist", item.artist);
     msg.AddString("album", item.album);
+    // Always added, empty included, so index i matches path i.
+    msg.AddString("albumArtist", item.albumArtist);
+    msg.AddString("mbAlbumId", item.mbAlbumId);
+    msg.AddString("mbArtistId", item.mbArtistId);
+    msg.AddString("mbTrackId", item.mbTrackId);
     msg.AddString("genre", item.genre);
     msg.AddInt32("year", item.year);
     msg.AddInt32("track", item.track);
@@ -424,6 +447,11 @@ void MediaLibraryScanner::FlushBatch() {
     msg.AddInt64("mtime", item.mtime);
     msg.AddInt64("inode", item.inode);
     msg.AddInt32("rating", item.rating);
+    // Always added, NaN included, so index i matches path i.
+    msg.AddFloat("rgTrackGain", item.rgTrackGain);
+    msg.AddFloat("rgTrackPeak", item.rgTrackPeak);
+    msg.AddFloat("rgAlbumGain", item.rgAlbumGain);
+    msg.AddFloat("rgAlbumPeak", item.rgAlbumPeak);
     if (item.rating > 0)
       DEBUG_PRINT("FlushBatch: Sending rating %d for %s\n",
                   (int)item.rating, item.path.String());
