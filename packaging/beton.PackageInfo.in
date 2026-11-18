@@ -15,6 +15,8 @@
 # two-line edit to Beton.rdef's app_version resource (upstream e29cf79) and
 # touches no source file, no Makefile and no dependency. Re-verify on any
 # upstream release that is not purely a resource bump.
+# Re-verified for 1.4.0 on 2026-11-15: readelf -d on a cross-build of main
+# (c279c5c) shows the same six sonames; the Makefile's LIBS did not change.
 #
 # 1.3.0-1 carried the ffmpeg6 generation instead (avcodec/avformat 60,
 # avutil 58, swresample 4). That was an accident of which ffmpeg*_devel was
@@ -33,6 +35,7 @@ description		"A native music player for Haiku.
 Features:
 - Audio playback
 - Audio CD (CDDA) playback
+- Audio CD ripping with AccurateRip verification
 - Internet Radio playback
 - DLNA playback
 - Playlist creation
@@ -49,6 +52,7 @@ vendor			"Indispensable Labs"
 
 copyrights {
 	"2025-2026 Daniel Weber"
+	"2026 David Beckman"
 }
 
 licenses {

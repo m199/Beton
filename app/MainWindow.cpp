@@ -203,14 +203,16 @@ void MainWindow::_ShowAboutWindow() {
     }
   }
 
-  about->AddCopyright(2025, "Daniel Weber");
+  // The extra line goes straight under Daniel's; a second AddCopyright()
+  // would put a blank line between them.
+  const char *extraCopyrights[] = {"2026 David Beckman", NULL};
+  about->AddCopyright(2025, "Daniel Weber", extraCopyrights);
   about->AddDescription("A music library manager and player for Haiku.\n\n"
                         "Solid grey and cold\nYet it vibrates with the "
                         "sound\nConcrete sings today\n\n"
                         "Thanks to:\n"
                         "andimachovec\n"
                         "Begasus\n"
-                        "dcbeckman\n"
                         "Humdinger\n"
                         "niFinx\n"
                         "zuMi\n\n"
