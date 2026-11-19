@@ -165,6 +165,16 @@ protected:
   void DetachedFromWindow() override;
   void MessageReceived(BMessage *msg) override;
 
+  /**
+   * @brief Draws a per-row marker in the latch strip at the left of each row.
+   *
+   * BColumnListView reserves that strip for tree latches and calls this for
+   * every row, with B_NO_LATCH when the row has no children (always, here).
+   * The playing track gets a play triangle, a missing file a warning sign.
+   */
+  void DrawLatch(BView *view, BRect frame, LatchType type,
+                 BRow *row) override;
+
 private:
   /** @name Filters */
   ///@{
