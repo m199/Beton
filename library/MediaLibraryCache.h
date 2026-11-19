@@ -213,6 +213,11 @@ private:
    * important part is that the next start does not read it again.
    */
   void _DiscardCorruptCache();
+  /**
+   * @brief Marks tracks outside the sidebar folders missing when their file
+   *        is gone (and clears the mark when it is back). Run at load.
+   */
+  void _CheckOutsideFilesExist();
 
   /**
    * @brief Inserts or replaces an item in the cache.

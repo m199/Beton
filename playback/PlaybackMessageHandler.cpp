@@ -150,6 +150,8 @@ bool PlaybackMessageHandler::HandleMessage(BMessage *msg) {
   }
 
   case MSG_NOW_PLAYING: {
+    if (fWindow->fPlaybackQueueManager)
+      fWindow->fPlaybackQueueManager->ResetMissingSkips();
     if (fWindow->fPlaybackTransportController)
       fWindow->fPlaybackTransportController->HandleNowPlaying(msg);
     // Measure a new track without gain now, not at the next tick.

@@ -294,6 +294,13 @@ PlaybackTransportController::HandlePlayFailed(BMessage *msg)
   BString path;
   msg->FindString("path", &path);
 
+  // A file deleted since the queue was built: skip to the next track
+  // instead of stopping. Other failures (an unreadable file) still stop.
+  if (!path.IsEmpty() && !BEntry(path.String()).Exists() &&
+      fWindow->fPlaybackQueueManager &&
+      fWindow->fPlaybackQueueManager->SkipMissingTrack(path))
+    return;
+
   StopPlayback();
 
   BString status(B_TRANSLATE("Could not play %file%"));

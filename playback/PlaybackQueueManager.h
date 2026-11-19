@@ -53,6 +53,19 @@ public:
   
   /** @brief Handles end-of-track progression. */
   void HandleTrackEnded();
+
+  /**
+   * @brief Called when the engine could not open @p path because the file
+   *        is gone. Marks the track missing and moves on to the next one, as
+   *        if it had ended.
+   * @return false when playback should stop instead: not a Library or
+   *         playlist queue, Repeat One, or every track in the queue has been
+   *         skipped in a row.
+   */
+  bool SkipMissingTrack(const BString &path);
+
+  /** @brief A track started playing: restarts the missing-track skip count. */
+  void ResetMissingSkips() { fMissingSkips = 0; }
   
   /** @brief Toggles shuffle mode and updates shuffle icon state. */
   void ToggleShuffle();
@@ -112,6 +125,14 @@ private:
   void _SetPlayPauseIcon();
   /** @brief Clears active DLNA play queue context. */
   void _ClearDlnaQueue();
+  /**
+   * @brief Marks a track whose file is gone as missing in the Library and
+   *        in @p view (so its row shows the missing-file sign right away),
+   *        then tells the user.
+   */
+  void _ReportMissingFile(MediaTableView *view, const MediaItem &item);
+  /** @brief Sets MediaItem::missing for @p path in the Library and view. */
+  void _MarkMissing(const MediaItem &item, MediaTableView *view);
   /** @brief Plays adjacent DLNA item; returns `true` if handled. */
   bool _PlayAdjacentDlna(int32 direction);
   /** @brief Plays adjacent radio station; returns `true` if handled. */
@@ -128,6 +149,9 @@ private:
   
   /** @brief Active repeat mode. */
   RepeatMode fRepeatMode = RepeatOff;
+
+  /** @brief Missing tracks skipped in a row; stops a queue of only those. */
+  int32 fMissingSkips = 0;
   
   /** @brief Random generator used for shuffle picks. */
   std::mt19937 fRng{std::random_device{}()};

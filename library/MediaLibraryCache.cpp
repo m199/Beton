@@ -739,6 +739,46 @@ void MediaLibraryCache::SaveCache() {
  * told to rebuild via MSG_CACHE_CORRUPT. Nothing here is fatal: a damaged
  * cache costs a rescan, never a crash on startup.
  */
+/**
+ * A track outside the sidebar folders was only marked missing by a full
+ * rescan, which an ordinary start does not run. So a file deleted while the
+ * app was closed, or marked when play found it gone, came back looking
+ * normal after a restart (2026-11-19). Check those tracks here, on the cache
+ * thread, before the window gets the library. Inside sidebar folders a gone
+ * file leaves the library through the folder sync instead, and a folder
+ * that is offline is handled by MarkBaseOffline(), so both are skipped.
+ */
+void MediaLibraryCache::_CheckOutsideFilesExist() {
+  std::vector<BString> folders;
+  LoadDirectories(folders);
+  for (const BString &folder : fSidebarFolders)
+    if (std::find(folders.begin(), folders.end(), folder) == folders.end())
+      folders.push_back(folder);
+  const std::vector<BString> trash = TrashFolders();
+
+  const bigtime_t start = system_time();
+  int32 checked = 0, nowMissing = 0, nowBack = 0;
+  for (auto &kv : fEntries) {
+    const BString &path = kv.first;
+    if (IsUnderAny(path, folders) || IsUnderAny(path, trash))
+      continue;
+    ++checked;
+    const bool exists = BEntry(path.String()).Exists();
+    if (!exists && !kv.second.missing) {
+      kv.second.missing = true;
+      ++nowMissing;
+    } else if (exists && kv.second.missing) {
+      kv.second.missing = false;
+      ++nowBack;
+    }
+  }
+  DEBUG_PRINT("Outside-folder check: %ld tracks, %ld newly missing, %ld back, "
+              "%lld us\n", (long)checked, (long)nowMissing, (long)nowBack,
+              (long long)(system_time() - start));
+  if (nowMissing > 0 || nowBack > 0)
+    _ScheduleSave();
+}
+
 void MediaLibraryCache::LoadCache() {
   fEntries.clear();
 
@@ -755,6 +795,9 @@ void MediaLibraryCache::LoadCache() {
     fCacheDirty = true;
     SaveCache();
   }
+
+  if (result != kCacheCorrupt)
+    _CheckOutsideFilesExist();
 
   if (fTarget.IsValid()) {
     BMessage msg(MSG_CACHE_LOADED);
