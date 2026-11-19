@@ -1,6 +1,6 @@
 /*
  * Copyright 2005-2026, Daniel Weber.
- * Copyright 2026, David Beckman.
+ * Copyright 2026, David Beckman, indispensablelabs@gmail.com.
  * All rights reserved. Distributed under the terms of the MIT License.
  */
 
@@ -95,8 +95,7 @@ PlaybackQueueManager::PlaySelectedQueue()
 
   const MediaItem *selectedItem = row ? cv->ItemAt(sel) : nullptr;
   if (IsMissingLocalFile(selectedItem)) {
-    ShowFileNotFoundAlert(selectedItem->path);
-    fWindow->UpdateStatus(B_TRANSLATE("File not found."), false);
+    _ReportMissingFile(cv, *selectedItem);
     return;
   }
 
@@ -134,6 +133,7 @@ PlaybackQueueManager::PlayNext()
   }
 
   if (fWindow && fWindow->fPlaybackEngine) {
+    fStepDirection = 1;
     if (fRepeatMode == RepeatOne) {
       fWindow->fPlaybackEngine->Play(fWindow->fPlaybackEngine->CurrentIndex());
     } else if (fShuffleEnabled) {
@@ -161,6 +161,7 @@ PlaybackQueueManager::PlayPrevious()
   }
 
   if (fWindow && fWindow->fPlaybackEngine) {
+    fStepDirection = -1;
     if (fShuffleEnabled) {
       if (!fShuffleHistory.empty()) {
         int32 prev = fShuffleHistory.back();
@@ -362,6 +363,121 @@ PlaybackQueueManager::QueueItemForPath(const BString &path) const
   return it != fQueueItems.end() ? &it->second : nullptr;
 }
 
+/**
+ * @brief Flags a track whose file has gone as missing, then tells the user.
+ *
+ * The Library only sets MediaItem::missing when it rescans, so a file deleted
+ * since then still looked normal: play refused it, but the row kept its
+ * plain look and showed no missing-file sign (seen 2026-11-19 with deleted
+ * Bandcamp downloads). Flag it now, in the Library's item list and in the
+ * view, so the row is drawn as missing at once. The next rescan records it
+ * in the Library cache as before.
+ */
+void
+PlaybackQueueManager::_ReportMissingFile(MediaTableView *view,
+                                         const MediaItem &item)
+{
+  // Copy first: UpdateItem() may replace the row the reference points into.
+  const BString path = item.path;
+  _MarkMissing(item, view);
+
+  fWindow->UpdateStatus(B_TRANSLATE("File not found."), false);
+  ShowFileNotFoundAlert(path);
+}
+
+void
+PlaybackQueueManager::_MarkMissing(const MediaItem &item, MediaTableView *view)
+{
+  MediaItem missing = item;
+  missing.missing = true;
+
+  auto it = fWindow->fPathIndex.find(missing.path);
+  if (it != fWindow->fPathIndex.end() &&
+      it->second < fWindow->fAllItems.size())
+    fWindow->fAllItems[it->second].missing = true;
+  if (view)
+    view->UpdateItem(missing);
+}
+
+/**
+ * The engine advances through its queue by itself; when the next file had
+ * been deleted, the failed open used to stop playback (seen 2026-11-19).
+ * Treat the track as ended instead, so the usual next-track rules (repeat,
+ * shuffle) pick what plays next.
+ */
+bool
+PlaybackQueueManager::SkipMissingTrack(const BString &path)
+{
+  if (!fWindow || !fWindow->fPlaybackEngine)
+    return false;
+  if (fActiveSource != SourceLibrary && fActiveSource != SourcePlaylist)
+    return false;
+
+  // Mark it, wherever it is listed: the Library's list, and the shown rows.
+  MediaItem item;
+  auto it = fWindow->fPathIndex.find(path);
+  if (it != fWindow->fPathIndex.end() &&
+      it->second < fWindow->fAllItems.size())
+    item = fWindow->fAllItems[it->second];
+  else
+    item.path = path;
+  MediaTableView *view = fWindow->fLibraryManager
+                             ? fWindow->fLibraryManager->ContentView()
+                             : nullptr;
+  if (view) {
+    for (int32 i = 0; i < view->CountRows(); ++i) {
+      const MediaItem *shown = view->ItemAt(i);
+      if (shown && shown->path == path) {
+        item = *shown;
+        break;
+      }
+    }
+  }
+  _MarkMissing(item, view);
+
+  // Everything in the queue was skipped in a row: nothing left to play.
+  if (++fMissingSkips >= fWindow->fPlaybackEngine->QueueSize())
+    return false;
+
+  AudioPlaybackEngine *engine = fWindow->fPlaybackEngine;
+  if (fStepDirection < 0) {
+    // Stepping back with "previous": keep going back past the gone track.
+    // Continuing forward would land on the track you were already on.
+    if (fShuffleEnabled) {
+      if (fShuffleHistory.empty())
+        return false;
+      int32 prev = fShuffleHistory.back();
+      fShuffleHistory.pop_back();
+      _ReportSkipped(path);
+      engine->Play(prev);
+    } else {
+      // At the start of the queue, stop, as "previous" does there.
+      if (engine->CurrentIndex() <= 0)
+        return false;
+      _ReportSkipped(path);
+      engine->PlayPrev();
+    }
+    _SetPlayPauseIcon();
+    return true;
+  }
+
+  // Repeat One would only retry the same missing file.
+  if (fRepeatMode == RepeatOne)
+    return false;
+
+  _ReportSkipped(path);
+  HandleTrackEnded();
+  return true;
+}
+
+void
+PlaybackQueueManager::_ReportSkipped(const BString &path)
+{
+  BString status(B_TRANSLATE("Skipped missing file %file%"));
+  status.ReplaceFirst("%file%", BPath(path.String()).Leaf());
+  fWindow->UpdateStatus(status, false);
+}
+
 void
 PlaybackQueueManager::PlayLocalSelection(MediaTableView *view,
                                             int32 rowIndex)
@@ -373,8 +489,7 @@ PlaybackQueueManager::PlayLocalSelection(MediaTableView *view,
     fWindow->fRadioStationController->CancelQueuedPlay();
   const MediaItem *selectedItem = view->ItemAt(rowIndex);
   if (IsMissingLocalFile(selectedItem)) {
-    ShowFileNotFoundAlert(selectedItem->path);
-    fWindow->UpdateStatus(B_TRANSLATE("File not found."), false);
+    _ReportMissingFile(view, *selectedItem);
     return;
   }
 

@@ -1,6 +1,6 @@
 /*
  * Copyright 2005-2026, Daniel Weber.
- * Copyright 2026, David Beckman.
+ * Copyright 2026, David Beckman, indispensablelabs@gmail.com.
  * All rights reserved. Distributed under the terms of the MIT License.
  */
 
@@ -1044,8 +1044,17 @@ bool MetadataTagIO::ExtractEmbeddedCover(const BPath &file, CoverBlob &outCover)
       return false;
   }
 
-  {
-    TagLib::MPEG::File f(p);
+  // Open the file only as the format its extension names, as everywhere
+  // else in this file. Trying MPEG first on every file made TagLib scan a
+  // FLAC for MP3 frames: 2.3-2.7 s per 50 MB FLAC on HaikuBox (Beta6,
+  // 2026-11-19), freezing the window that opened Properties on three of
+  // them for ~7 s. Cover extraction needs no audio properties, so skip
+  // reading those too.
+  BString lower(p);
+  lower.ToLower();
+
+  if (lower.EndsWith(".mp3")) {
+    TagLib::MPEG::File f(p, false);
     if (f.isOpen()) {
       if (TagLib::ID3v2::Tag *id3 = f.ID3v2Tag(false)) {
         const TagLib::ID3v2::FrameList &apic = id3->frameList("APIC");
@@ -1063,8 +1072,8 @@ bool MetadataTagIO::ExtractEmbeddedCover(const BPath &file, CoverBlob &outCover)
     }
   }
 
-  {
-    TagLib::FLAC::File f(p);
+  if (lower.EndsWith(".flac")) {
+    TagLib::FLAC::File f(p, false);
     if (f.isValid()) {
       const TagLib::List<TagLib::FLAC::Picture *> &pics = f.pictureList();
       if (!pics.isEmpty() && pics[0]) {
@@ -1077,8 +1086,9 @@ bool MetadataTagIO::ExtractEmbeddedCover(const BPath &file, CoverBlob &outCover)
     }
   }
 
-  {
-    TagLib::MP4::File f(p);
+  if (lower.EndsWith(".m4a") || lower.EndsWith(".mp4") ||
+      lower.EndsWith(".aac")) {
+    TagLib::MP4::File f(p, false);
     if (f.isValid() && f.tag()) {
       const TagLib::MP4::ItemMap &im = f.tag()->itemMap();
       auto it = im.find("covr");

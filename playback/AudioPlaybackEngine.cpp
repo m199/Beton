@@ -1,6 +1,6 @@
 /*
  * Copyright 2005-2026, Daniel Weber.
- * Copyright 2026, David Beckman.
+ * Copyright 2026, David Beckman, indispensablelabs@gmail.com.
  * All rights reserved. Distributed under the terms of the MIT License.
  */
 
@@ -503,6 +503,41 @@ void AudioPlaybackEngine::_ApplyFade(void *buffer, size_t size,
 // buffer can always be produced despite the converter's fractional-frame
 // latency (avoids a perpetual 1-frame shortfall when upsampling).
 static const int64 kResampleCushion = 128;
+
+ssize_t AudioPlaybackEngine::_ReadStreamConverted(void *buffer, size_t size) {
+  const int srcFrameSize = fResampler.SrcFrameSize();
+  const int dstFrameSize = fResampler.DstFrameSize();
+  if (!fNetworkStream || srcFrameSize <= 0 || dstFrameSize <= 0) {
+    memset(buffer, 0, size);
+    return (ssize_t)size;
+  }
+
+  const int64 wantFrames = (int64)(size / dstFrameSize);
+  // As in _FillResampled: always feed the converter what it needs for the
+  // whole buffer plus a small cushion; SourceFramesForOutput() subtracts
+  // what it already holds, so its internal buffer stays cushion-sized.
+  const int64 srcNeed =
+      fResampler.SourceFramesForOutput(wantFrames) + kResampleCushion;
+  const size_t needBytes = (size_t)srcNeed * srcFrameSize;
+  if (fResampleScratch.size() < needBytes)
+    fResampleScratch.resize(needBytes); // defensive; normally pre-sized
+
+  // ReadPcm() returns exactly needBytes (silence-padded on underrun) or an
+  // error once the stream has ended.
+  ssize_t got = fNetworkStream->ReadPcm(fResampleScratch.data(), needBytes);
+  if (got < 0) {
+    memset(buffer, 0, size);
+    return got;
+  }
+
+  int64 produced = fResampler.Convert(fResampleScratch.data(),
+                                      (int64)got / srcFrameSize, buffer,
+                                      wantFrames);
+  size_t producedBytes = (size_t)produced * dstFrameSize;
+  if (producedBytes < size)
+    memset((uint8 *)buffer + producedBytes, 0, size - producedBytes);
+  return (ssize_t)size;
+}
 
 int64 AudioPlaybackEngine::_FillResampled(void *buffer, int64 wantFrames,
                                           bool &hitEof) {
@@ -1370,11 +1405,33 @@ void AudioPlaybackEngine::PlayUrl(const BUrl &url, const char *title,
       fPlayer = new BSoundPlayer(node, &format, kMixerName, &input, &_PlayBuffer, NULL, this);
 
       if (fPlayer && fPlayer->InitCheck() == B_OK) {
-        // NOTE: the stream's resample target was already set before Open()
-        // (via GetFormatFor(bus.input) above), so WaitForFormat() returned the
-        // bus-format raf and the wildcard connection negotiates to match it.
-        // We only refresh the display fields here.
+        // The stream's decoder was told the bus format before Open() (via
+        // GetFormatFor(bus.input) above), so raf is normally exactly what
+        // the wildcard connection negotiates. But the decoder always emits
+        // float, and a device driver can report one format and connect at
+        // another: on 2026-11-19 an AudioFire in a bad state played every
+        // stream badly distorted while local files (which convert to the
+        // negotiated format) were fine. So check, and convert when they
+        // differ instead of copying mismatched bytes to the device.
         media_raw_audio_format pf = fPlayer->Format();
+        status_t rs = fResampler.Init(raf, pf);
+        if (rs != B_OK) {
+          DEBUG_PRINT("Stream converter init failed (%s); playing unconverted\n",
+                      strerror(rs));
+          fResampler.Unset();
+        } else if (fResampler.IsActive()) {
+          int64 dstFrames = fResampler.DstFrameSize() > 0
+              ? (int64)(pf.buffer_size / fResampler.DstFrameSize()) : 0;
+          int64 srcFrames = fResampler.SourceFramesForOutput(dstFrames)
+              + kResampleCushion + 64;
+          fResampleScratch.resize((size_t)srcFrames * fResampler.SrcFrameSize());
+        }
+        DEBUG_PRINT("Direct stream output: stream %.0f Hz/%dch fmt 0x%x -> "
+                    "device %.0f Hz/%dch fmt 0x%x (%s)\n",
+                    raf.frame_rate, (int)raf.channel_count, (unsigned)raf.format,
+                    pf.frame_rate, (int)pf.channel_count, (unsigned)pf.format,
+                    fResampler.IsActive() ? "CONVERTING: formats differ"
+                                          : "passthrough");
         fCurrentSampleRate.store(pf.frame_rate);
         fCurrentChannels.store(pf.channel_count);
       } else {
@@ -1841,7 +1898,13 @@ void AudioPlaybackEngine::_PlayBuffer(
   }
 
   if (self->fNetworkStream) {
+#if ENABLE_LOCAL_OUTPUT
+    ssize_t read = self->fResampler.IsActive()
+                       ? self->_ReadStreamConverted(buffer, size)
+                       : self->fNetworkStream->ReadPcm(buffer, size);
+#else
     ssize_t read = self->fNetworkStream->ReadPcm(buffer, size);
+#endif
     if (read < 0) {
       memset(buffer, 0, size);
       if (self->fIsStreaming.load(std::memory_order_relaxed)) {

@@ -1,6 +1,6 @@
 /*
  * Copyright 2005-2026, Daniel Weber.
- * Copyright 2026, David Beckman.
+ * Copyright 2026, David Beckman, indispensablelabs@gmail.com.
  * All rights reserved. Distributed under the terms of the MIT License.
  */
 
@@ -53,6 +53,25 @@ public:
   
   /** @brief Handles end-of-track progression. */
   void HandleTrackEnded();
+
+  /**
+   * @brief Called when the engine could not open @p path because the file
+   *        is gone. Marks the track missing and moves on to the next one, as
+   *        if it had ended.
+   * @return false when playback should stop instead: not a Library or
+   *         playlist queue, Repeat One, or every track in the queue has been
+   *         skipped in a row.
+   */
+  bool SkipMissingTrack(const BString &path);
+
+  /**
+   * @brief A track started playing: restarts the missing-track skip count,
+   *        and skipping goes forward again until the next "previous".
+   */
+  void ResetMissingSkips() {
+    fMissingSkips = 0;
+    fStepDirection = 1;
+  }
   
   /** @brief Toggles shuffle mode and updates shuffle icon state. */
   void ToggleShuffle();
@@ -112,6 +131,16 @@ private:
   void _SetPlayPauseIcon();
   /** @brief Clears active DLNA play queue context. */
   void _ClearDlnaQueue();
+  /**
+   * @brief Marks a track whose file is gone as missing in the Library and
+   *        in @p view (so its row shows the missing-file sign right away),
+   *        then tells the user.
+   */
+  void _ReportMissingFile(MediaTableView *view, const MediaItem &item);
+  /** @brief Sets MediaItem::missing for @p path in the Library and view. */
+  void _MarkMissing(const MediaItem &item, MediaTableView *view);
+  /** @brief Shows "Skipped missing file …" in the status bar. */
+  void _ReportSkipped(const BString &path);
   /** @brief Plays adjacent DLNA item; returns `true` if handled. */
   bool _PlayAdjacentDlna(int32 direction);
   /** @brief Plays adjacent radio station; returns `true` if handled. */
@@ -128,6 +157,16 @@ private:
   
   /** @brief Active repeat mode. */
   RepeatMode fRepeatMode = RepeatOff;
+
+  /** @brief Missing tracks skipped in a row; stops a queue of only those. */
+  int32 fMissingSkips = 0;
+
+  /**
+   * @brief Direction a missing track is skipped in: -1 after "previous" (so
+   *        stepping back passes it instead of returning to where you were),
+   *        else 1.
+   */
+  int32 fStepDirection = 1;
   
   /** @brief Random generator used for shuffle picks. */
   std::mt19937 fRng{std::random_device{}()};

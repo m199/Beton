@@ -1,6 +1,6 @@
 /*
  * Copyright 2005-2026, Daniel Weber.
- * Copyright 2026, David Beckman.
+ * Copyright 2026, David Beckman, indispensablelabs@gmail.com.
  * All rights reserved. Distributed under the terms of the MIT License.
  */
 
@@ -293,6 +293,13 @@ PlaybackTransportController::HandlePlayFailed(BMessage *msg)
 
   BString path;
   msg->FindString("path", &path);
+
+  // A file deleted since the queue was built: skip to the next track
+  // instead of stopping. Other failures (an unreadable file) still stop.
+  if (!path.IsEmpty() && !BEntry(path.String()).Exists() &&
+      fWindow->fPlaybackQueueManager &&
+      fWindow->fPlaybackQueueManager->SkipMissingTrack(path))
+    return;
 
   StopPlayback();
 

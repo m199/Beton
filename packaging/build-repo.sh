@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copyright 2026, David Beckman.
+# Copyright 2026, David Beckman, indispensablelabs@gmail.com.
 # All rights reserved. Distributed under the terms of the MIT License.
 
 #

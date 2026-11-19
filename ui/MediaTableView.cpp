@@ -1,6 +1,6 @@
 /*
  * Copyright 2005-2026, Daniel Weber.
- * Copyright 2026, David Beckman.
+ * Copyright 2026, David Beckman, indispensablelabs@gmail.com.
  * All rights reserved. Distributed under the terms of the MIT License.
  */
 
@@ -1420,6 +1420,66 @@ void MediaTableView::AddEntries(std::vector<MediaItem> items) {
 #else
   _AddBatch(fPendingItems.size());
 #endif
+}
+
+/*!	The latch strip is at least 15 px wide (kLeftMargin in Haiku's
+	ColumnListView.cpp, which SetLatchWidth() cannot go below) and is already
+	filled with the row's background when this is called. The markers are
+	sized from that strip, so they follow the row height and font size.
+*/
+void MediaTableView::DrawLatch(BView *view, BRect frame, LatchType type,
+                               BRow *row) {
+  if (type != B_NO_LATCH) {
+    BColumnListView::DrawLatch(view, frame, type, row);
+    return;
+  }
+
+  MediaRow *mediaRow = dynamic_cast<MediaRow *>(row);
+  if (mediaRow == nullptr)
+    return;
+  const MediaItem &item = mediaRow->Item();
+
+  const bool playing = !fNowPlayingPath.IsEmpty() &&
+                       item.path == fNowPlayingPath;
+  if (!playing && !item.missing)
+    return;
+
+  float size = std::min(frame.Width(), frame.Height()) - 4.0f;
+  if (size < 5.0f)
+    return;
+  BPoint center((frame.left + frame.right) / 2.0f,
+                (frame.top + frame.bottom) / 2.0f);
+  float half = size / 2.0f;
+
+  view->PushState();
+  view->SetDrawingMode(B_OP_OVER);
+
+  if (playing) {
+    // The row's own text color, so the marker reads like its text, selected
+    // or not, in light and dark themes.
+    view->SetHighColor(row->IsSelected() ? Color(B_COLOR_SELECTION_TEXT)
+                                         : Color(B_COLOR_TEXT));
+    float w = size * 0.8f;
+    view->FillTriangle(BPoint(center.x - w / 2.0f, center.y - half),
+                       BPoint(center.x - w / 2.0f, center.y + half),
+                       BPoint(center.x + w / 2.0f, center.y));
+  } else {
+    // A warning sign: amber triangle with a dark "!". Fixed colors, like
+    // Haiku's own warning icons, so it reads in every theme.
+    BPoint top(center.x, center.y - half);
+    BPoint left(center.x - half, center.y + half);
+    BPoint right(center.x + half, center.y + half);
+    view->SetHighColor(make_color(240, 170, 0));
+    view->FillTriangle(top, left, right);
+    view->SetHighColor(make_color(40, 30, 0));
+    float barTop = center.y - half * 0.35f;
+    float barBottom = center.y + half * 0.35f;
+    view->StrokeLine(BPoint(center.x, barTop), BPoint(center.x, barBottom));
+    view->FillRect(BRect(center.x, center.y + half * 0.6f, center.x,
+                         center.y + half * 0.7f));
+  }
+
+  view->PopState();
 }
 
 /**

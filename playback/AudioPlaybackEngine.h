@@ -1,6 +1,6 @@
 /*
  * Copyright 2005-2026, Daniel Weber.
- * Copyright 2026, David Beckman.
+ * Copyright 2026, David Beckman, indispensablelabs@gmail.com.
  * All rights reserved. Distributed under the terms of the MIT License.
  */
 
@@ -243,6 +243,13 @@ private:
    * signals end of track).
    */
   int64 _FillResampled(void *buffer, int64 wantFrames, bool &hitEof);
+  /**
+   * @brief Fills @p size bytes of device-format audio from fNetworkStream,
+   *        converting with fResampler (stream format != device format).
+   * @return @p size, or a negative error when the stream has ended
+   *         (ReadPcm()'s contract).
+   */
+  ssize_t _ReadStreamConverted(void *buffer, size_t size);
   // Capture the system mixer's master gain for direct-output loudness matching.
   // Call when a direct connection is established (before the mixer is
   // disconnected). Sets fMixerMasterDb + fDirectCompActive, then recomputes.

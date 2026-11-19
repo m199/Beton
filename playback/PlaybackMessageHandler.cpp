@@ -1,6 +1,6 @@
 /*
  * Copyright 2005-2026, Daniel Weber.
- * Copyright 2026, David Beckman.
+ * Copyright 2026, David Beckman, indispensablelabs@gmail.com.
  * All rights reserved. Distributed under the terms of the MIT License.
  */
 
@@ -150,6 +150,8 @@ bool PlaybackMessageHandler::HandleMessage(BMessage *msg) {
   }
 
   case MSG_NOW_PLAYING: {
+    if (fWindow->fPlaybackQueueManager)
+      fWindow->fPlaybackQueueManager->ResetMissingSkips();
     if (fWindow->fPlaybackTransportController)
       fWindow->fPlaybackTransportController->HandleNowPlaying(msg);
     // Measure a new track without gain now, not at the next tick.

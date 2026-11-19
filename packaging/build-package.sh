@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copyright 2026, David Beckman.
+# Copyright 2026, David Beckman, indispensablelabs@gmail.com.
 # All rights reserved. Distributed under the terms of the MIT License.
 
 #
@@ -28,25 +28,24 @@ OUTDIR="$PKGDIR/out"
 # Bump the revision (not the base) when the packaging changes but the source
 # does not -- a rebuilt package with identical contents and the same version
 # is indistinguishable to pkgman, so clients never pick it up.
-VERSION_BASE="1.3.1"
+VERSION_BASE="1.4.0"
 # Revision resets to 1 on an upstream version bump -- it counts OUR packaging
 # iterations of a given upstream version, not builds overall.
 #
-# -2 carries our About-box version fix (1f6944b), which is NOT in upstream's
-# v1.3.1 tag. ⚠️ This is the point where our published package stops matching
-# what packaging/beton-1.3.1.recipe would build: that recipe fetches upstream's
-# tarball via SOURCE_URI and would produce a binary WITHOUT the fix. That is
-# correct for a HaikuPorts submission -- it must build the released source --
-# but it means the two are deliberately not identical until the fix lands
-# upstream. Build THIS package from the repository working tree, not from the
-# tarball, or the fix silently will not be in it.
+# 1.4.0-1 is built from main at the v1.4.0 tag (`git rev-list --count
+# v1.3.1..v1.4.0` gives the commits since 1.3.1), including the About-box fix
+# 1f6944b that made 1.3.1-2 differ from upstream's tarball. Build from the
+# repository working tree at that tag.
+#
+# History worth keeping: 1.3.1-2 carried 1f6944b, which was NOT in upstream's
+# v1.3.1 tag, so it deliberately did not match packaging/beton-1.3.1.recipe.
 #
 # History worth keeping: 1.3.0-1 was linked against ffmpeg6, purely because
 # ffmpeg6_devel happened to be the devel package installed on the build box.
 # Upstream has declared ffmpeg8 since the 1.2.0 recipe and has never used
 # ffmpeg6. 1.3.0-2 corrected that; see the clean-build note below for why the
 # correction needed a from-scratch rebuild to take effect.
-REVISION="2"
+REVISION="1"
 VERSION="$VERSION_BASE-$REVISION"
 
 APPNAME="Beton"
