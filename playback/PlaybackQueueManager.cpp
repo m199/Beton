@@ -133,6 +133,7 @@ PlaybackQueueManager::PlayNext()
   }
 
   if (fWindow && fWindow->fPlaybackEngine) {
+    fStepDirection = 1;
     if (fRepeatMode == RepeatOne) {
       fWindow->fPlaybackEngine->Play(fWindow->fPlaybackEngine->CurrentIndex());
     } else if (fShuffleEnabled) {
@@ -160,6 +161,7 @@ PlaybackQueueManager::PlayPrevious()
   }
 
   if (fWindow && fWindow->fPlaybackEngine) {
+    fStepDirection = -1;
     if (fShuffleEnabled) {
       if (!fShuffleHistory.empty()) {
         int32 prev = fShuffleHistory.back();
@@ -433,19 +435,47 @@ PlaybackQueueManager::SkipMissingTrack(const BString &path)
   }
   _MarkMissing(item, view);
 
-  // Repeat One would only retry the same missing file.
-  if (fRepeatMode == RepeatOne)
-    return false;
   // Everything in the queue was skipped in a row: nothing left to play.
   if (++fMissingSkips >= fWindow->fPlaybackEngine->QueueSize())
     return false;
 
+  AudioPlaybackEngine *engine = fWindow->fPlaybackEngine;
+  if (fStepDirection < 0) {
+    // Stepping back with "previous": keep going back past the gone track.
+    // Continuing forward would land on the track you were already on.
+    if (fShuffleEnabled) {
+      if (fShuffleHistory.empty())
+        return false;
+      int32 prev = fShuffleHistory.back();
+      fShuffleHistory.pop_back();
+      _ReportSkipped(path);
+      engine->Play(prev);
+    } else {
+      // At the start of the queue, stop, as "previous" does there.
+      if (engine->CurrentIndex() <= 0)
+        return false;
+      _ReportSkipped(path);
+      engine->PlayPrev();
+    }
+    _SetPlayPauseIcon();
+    return true;
+  }
+
+  // Repeat One would only retry the same missing file.
+  if (fRepeatMode == RepeatOne)
+    return false;
+
+  _ReportSkipped(path);
+  HandleTrackEnded();
+  return true;
+}
+
+void
+PlaybackQueueManager::_ReportSkipped(const BString &path)
+{
   BString status(B_TRANSLATE("Skipped missing file %file%"));
   status.ReplaceFirst("%file%", BPath(path.String()).Leaf());
   fWindow->UpdateStatus(status, false);
-
-  HandleTrackEnded();
-  return true;
 }
 
 void
