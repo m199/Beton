@@ -112,7 +112,6 @@ void MetadataService::SaveTags(const BMessage *msg) {
       MetadataTagIO::ReadBfsAttributes(path, td);
     else
       MetadataTagIO::ReadTags(path, td);
-    bool hasRating = false;
 
     BString s;
     if (msg->FindString("title", &s) == B_OK)
@@ -156,7 +155,6 @@ void MetadataService::SaveTags(const BMessage *msg) {
     int32 rating = 0;
     if (msg->FindInt32("rating", &rating) == B_OK) {
       td.rating = rating < 0 ? 0 : (rating > 10 ? 10 : (uint32)rating);
-      hasRating = true;
     }
 
     DEBUG_PRINT("SaveTags: Writing metadata. "
@@ -173,8 +171,15 @@ void MetadataService::SaveTags(const BMessage *msg) {
       if (targets.tags && targets.bfs && MetadataTagIO::IsBeFsVolume(path)) {
         TagData tdSaved;
         MetadataTagIO::ReadTags(path, tdSaved, false);
-        if (hasRating)
-          tdSaved.rating = td.rating;
+        // Always carry the rating over. The read-back skips the BFS fallback
+        // so that a field blanked in the edit stays blank (b67b96d), but a
+        // rating is the one field most formats never hold in their tags
+        // (only MP3 and MP4 files get one written): for a FLAC it always read
+        // back as 0, and WriteBfsAttributes() then removed Media:Rating. Any
+        // Properties save on a FLAC lost its rating (found 2026-11-19).
+        // td.rating is the new rating when one was set, otherwise the one
+        // read before saving, BFS attribute included.
+        tdSaved.rating = td.rating;
         MetadataTagIO::WriteBfsAttributes(path, tdSaved, nullptr, 512 * 1024);
       }
 
