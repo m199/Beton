@@ -10,9 +10,11 @@
 #include "MediaItem.h"
 #include "Messages.h"
 #include "SingleColumnListView.h"
+#include <Collator.h>
 #include <ColumnListView.h>
 #include <ColumnTypes.h>
 #include <Entry.h>
+#include <Locale.h>
 #include <OS.h>
 #include <Path.h>
 #include <ScrollView.h>
@@ -36,6 +38,32 @@ static BString kLabelAllAlbum = B_TRANSLATE("Show all Album");
 static BString kLabelNoGenre = B_TRANSLATE("No Genre");
 static BString kLabelNoArtist = B_TRANSLATE("No Artist");
 static BString kLabelNoAlbum = B_TRANSLATE("No Album");
+
+/**
+ * Order for the Genre, Artist and Album lists: the way the user's language
+ * sorts text, so case and accents don't split the list. Plain BString order
+ * compares bytes, which put every capitalised name before every lower-case
+ * one ("syndrotox" came after "Zola", then a second run a-z) and "Édith"
+ * after "z". Names that differ only in case or accents stay separate
+ * entries, next to each other.
+ */
+struct DisplayOrder {
+  bool operator()(const BString &a, const BString &b) const {
+    int c = Collator().Compare(a.String(), b.String());
+    if (c != 0)
+      return c < 0;
+    return a.Compare(b) < 0; // Equal to the collator: still two entries.
+  }
+
+  static const BCollator &Collator() {
+    static const BCollator collator = []() {
+      BCollator c;
+      BLocale::Default()->GetCollator(&c);
+      return c;
+    }();
+    return collator;
+  }
+};
 
 /**
  * @brief Normalizes album/artist key parts for stable deduplication.
@@ -468,10 +496,10 @@ void LibraryBrowserController::UpdateFilteredViews(
   }
 
   /// 2. Build Filter Sets
-  std::set<BString> allGenres;
+  std::set<BString, DisplayOrder> allGenres;
   bool hasUntaggedGenreSrc = false;
 
-  std::set<BString> artistsForGenre;
+  std::set<BString, DisplayOrder> artistsForGenre;
   bool hasUntaggedArtistForGenre = false;
 
   struct AlbumKey {
@@ -487,7 +515,7 @@ void LibraryBrowserController::UpdateFilteredViews(
   };
 
   /// Map AlbumName -> Set of AlbumKeys (for disambiguation)
-  std::map<BString, std::set<AlbumKey>> albumsForGA;
+  std::map<BString, std::set<AlbumKey>, DisplayOrder> albumsForGA;
   bool hasUntaggedAlbumForGA = false;
 
   /// -- Filter Lambdas --

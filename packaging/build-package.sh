@@ -28,14 +28,18 @@ OUTDIR="$PKGDIR/out"
 # Bump the revision (not the base) when the packaging changes but the source
 # does not -- a rebuilt package with identical contents and the same version
 # is indistinguishable to pkgman, so clients never pick it up.
-VERSION_BASE="1.4.0"
+VERSION_BASE="1.4.1"
 # Revision resets to 1 on an upstream version bump -- it counts OUR packaging
 # iterations of a given upstream version, not builds overall.
 #
-# 1.4.0-1 is built from main at the v1.4.0 tag (`git rev-list --count
-# v1.3.1..v1.4.0` gives the commits since 1.3.1), including the About-box fix
-# 1f6944b that made 1.3.1-2 differ from upstream's tarball. Build from the
-# repository working tree at that tag.
+# 1.4.1-1 is built from main at the v1.4.1 tag. 1.4.1 is 1.4.0 plus PR #36
+# (FLAC ratings kept on Properties saves, 978666d; locale-aware sorting of the
+# filter lists, 11e63a7), which missed upstream's v1.4.0 tag (79185a0). Build
+# from the repository working tree at that tag.
+#
+# History worth keeping: 1.4.0-1 was built from main at the v1.4.0 tag,
+# including the About-box fix 1f6944b that made 1.3.1-2 differ from
+# upstream's tarball.
 #
 # History worth keeping: 1.3.1-2 carried 1f6944b, which was NOT in upstream's
 # v1.3.1 tag, so it deliberately did not match packaging/beton-1.3.1.recipe.

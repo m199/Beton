@@ -17,6 +17,8 @@
 # upstream release that is not purely a resource bump.
 # Re-verified for 1.4.0 on 2026-11-15: readelf -d on a cross-build of main
 # (c279c5c) shows the same six sonames; the Makefile's LIBS did not change.
+# Carried to 1.4.1 unchanged: no Makefile commit between v1.4.0 and 11e63a7
+# (git log v1.4.0..11e63a7 -- Makefile is empty, checked 2026-11-24).
 #
 # 1.3.0-1 carried the ffmpeg6 generation instead (avcodec/avformat 60,
 # avutil 58, swresample 4). That was an accident of which ffmpeg*_devel was
