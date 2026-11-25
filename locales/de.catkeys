@@ -1,4 +1,4 @@
-1	German	application/x-vnd.Beton	1896348188
+1	German	application/x-vnd.Beton	1663833425
 Error: No data received	MusicBrainzMatcherWindow		Fehler: Keine Daten empfangen
 Generate New Playlist	MainWindow		Neue Playlist erstellen
 Up	MusicBrainzMatcherWindow		Hoch
@@ -346,3 +346,199 @@ Tags	MetadataSyncConflictDialog		Tags
 No Genre	LibraryBrowserController		Kein Genre
 Searching...	MetadataPropertiesWindow		Suchen...
 Disconnect System Sounds	OutputViewController		Systemklänge abschalten
+% of a track unreadable (0 to 10; anything else: never, only Skip track)	CDRipWindow		% eines Titels unlesbar (0 bis 10; jeder andere Wert: nie, nur Titel überspringen)
+%ld accurate	CDRipWindow		%ld exakt
+%ld already there	CDRipWindow		%ld bereits vorhanden
+%ld failed	CDRipWindow		%ld fehlgeschlagen
+%ld glitches	CDRipWindow		%ld Störstellen
+%ld ms silent	CDRipWindow		%ld ms stumm
+%ld skipped	CDRipWindow		%ld übersprungen
+%ld tracks ripped	CDRipWindow		%ld Titel gerippt
+%ld tracks still had read errors after re-reading that may be heard as clicks or gaps (orange or red). The \"Read errors\" column says how many glitches each has and how long the longest is. Cleaning the disc and ripping those tracks again (delete their files first) may help.	CDRipWindow		%ld Titel hatten nach erneutem Lesen noch Lesefehler, die als Knackser oder Aussetzer hörbar sein können (orange oder rot). Die Spalte \"Lesefehler\" zeigt, wie viele Störstellen jeder Titel hat und wie lang die längste ist. Die CD zu reinigen und diese Titel erneut zu rippen (vorher ihre Dateien löschen) kann helfen.
+%ld tracks, %s	CDRipWindow		%ld Titel, %s
+%ld unreadable sectors (%.1f s)	CDRipWindow		%ld unlesbare Sektoren (%.1f s)
+%ld with audible errors	CDRipWindow		%ld mit hörbaren Fehlern
+%s is not a field and is kept as text: %s	CDRipWindow		%s ist kein Feld und bleibt als Text erhalten: %s
+(audio verified exact)	CDRipWindow		(Audio als exakt bestätigt)
+(stopped)	CDRipWindow		(gestoppt)
+- AccurateRip:	CDRipWindow		- AccurateRip:
+- Read errors:	CDRipWindow		- Lesefehler:
+01 - Artist - Title (no folders)	CDRipWindow		01 - Interpret - Titel (keine Ordner)
+1 glitch	CDRipWindow		1 Störstelle
+1 track ripped	CDRipWindow		1 Titel gerippt
+1 unreadable sector (%.2f s)	CDRipWindow		1 unlesbarer Sektor (%.2f s)
+1 with audible errors	CDRipWindow		1 mit hörbaren Fehlern
+Accurate (%ld matching rips)	CDRipWindow		Exakt (%ld übereinstimmende Rips)
+Accurate (1 matching rip)	CDRipWindow		Exakt (1 übereinstimmender Rip)
+Add tracks to library	CDRipWindow		Titel zur Bibliothek hinzufügen
+Album artist - Album/01 - Title	CDRipWindow		Album-Interpret - Album/01 - Titel
+Album artist/Album/01 - Title	CDRipWindow		Album-Interpret/Album/01 - Titel
+Album artist/Year - Album/01 - Title	CDRipWindow		Album-Interpret/Jahr - Album/01 - Titel
+Album artist:	CDRipWindow		Album-Interpret:
+Album/01 - Artist - Title	CDRipWindow		Album/01 - Interpret - Titel
+Album:	CDRipWindow		Album:
+All tracks	CDRipWindow		Alle Titel
+Already there, not ripped again	CDRipWindow		Bereits vorhanden, nicht erneut gerippt
+Artist	CDRipWindow		Interpret
+Beton: Choose rip folder	CDRipWindow		Beton: Zielordner zum Rippen wählen
+Check rips with AccurateRip (needs internet)	CDRipWindow		Rips mit AccurateRip prüfen (benötigt Internet)
+Choose the folder to save the tracks in.	CDRipWindow		Wählen Sie den Ordner, in dem die Titel gespeichert werden.
+Choose…	CDRipWindow		Auswählen…
+Close	CDRipWindow		Schließen
+Could not find the Trash	CDRipWindow		Papierkorb nicht gefunden
+Could not move the file to the Trash	CDRipWindow		Die Datei konnte nicht in den Papierkorb verschoben werden
+Could not start ripping: %s	CDRipWindow		Rippen konnte nicht gestartet werden: %s
+Edit artist	CDRipWindow		Interpret bearbeiten
+Edit title	CDRipWindow		Titel bearbeiten
+Eject Disc	CDRipWindow		CD auswerfen
+Elapsed	CDRipWindow		Verstrichen
+Enter a pattern for the file names.	CDRipWindow		Geben Sie ein Muster für die Dateinamen ein.
+Example: %s	CDRipWindow		Beispiel: %s
+FLAC (lossless)	CDRipWindow		FLAC (verlustfrei)
+Failed: %s	CDRipWindow		Fehlgeschlagen: %s
+File names:	CDRipWindow		Dateinamen:
+Format:	CDRipWindow		Format:
+Gain	CDRipWindow		Gain
+Gave up at the first unreadable sector, not ripped	CDRipWindow		Beim ersten unlesbaren Sektor aufgegeben, nicht gerippt
+Gave up: over %ld%% unreadable, not ripped	CDRipWindow		Aufgegeben: über %ld%% unlesbar, nicht gerippt
+Genre:	CDRipWindow		Genre:
+Give up at:	CDRipWindow		Aufgeben bei:
+If the save folder isn't one of the library's folders yet, it is added to them.	CDRipWindow		Ist der Zielordner noch keiner der Ordner der Bibliothek, wird er hinzugefügt.
+Keep ripping	CDRipWindow		Weiter rippen
+Length	CDRipWindow		Länge
+MP3 (320 kbps)	CDRipWindow		MP3 (320 kbps)
+Minor	CDRipWindow		Gering
+Move ripped file to Trash	CDRipWindow		Gerippte Datei in den Papierkorb verschieben
+Moved to Trash	CDRipWindow		In den Papierkorb verschoben
+No audio tracks were found on this disc.	CDRipWindow		Auf dieser CD wurden keine Audiotitel gefunden.
+No track matches AccurateRip. Your copy may be a pressing nobody has submitted yet, or the drive's read offset is wrong. Empty the read offset field to detect it again.	CDRipWindow		Kein Titel stimmt mit AccurateRip überein. Ihre CD ist vielleicht eine Pressung, die noch niemand eingereicht hat, oder der Lese-Offset des Laufwerks ist falsch. Leeren Sie das Feld für den Lese-Offset, um ihn erneut zu ermitteln.
+No tracks are selected.	CDRipWindow		Es sind keine Titel ausgewählt.
+None	CDRipWindow		Keine
+None (%ld fixed)	CDRipWindow		Keine (%ld behoben)
+Not checked	CDRipWindow		Nicht geprüft
+Not saved to the disc: %s	CDRipWindow		Nicht auf der CD gespeichert: %s
+Not selected	CDRipWindow		Nicht ausgewählt
+Noticeable	CDRipWindow		Merklich
+OK	CDRipWindow		OK
+Play	CDRipWindow		Abspielen
+Presets	CDRipWindow		Vorlagen
+Read errors	CDRipWindow		Lesefehler
+Read offset:	CDRipWindow		Lese-Offset:
+Rip	CDRipWindow		Rippen
+Rip audio CD	CDRipWindow		Audio-CD rippen
+Ripped	CDRipWindow		Gerippt
+Ripped (not in AccurateRip)	CDRipWindow		Gerippt (nicht in AccurateRip)
+Ripped, no AccurateRip match	CDRipWindow		Gerippt, keine Übereinstimmung in AccurateRip
+Ripping %ld%%	CDRipWindow		Rippe %ld%%
+Save to:	CDRipWindow		Speichern in:
+Select	CDRipWindow		Auswählen
+Severe	CDRipWindow		Schwer
+Show folder	CDRipWindow		Ordner anzeigen
+Skip track	CDRipWindow		Titel überspringen
+Skipped, not ripped	CDRipWindow		Übersprungen, nicht gerippt
+Skipping…	CDRipWindow		Überspringe…
+Some tracks could not be ripped:	CDRipWindow		Einige Titel konnten nicht gerippt werden:
+Some tracks don't match AccurateRip, although the rest of the disc does. They probably have read errors. Cleaning the disc and ripping those tracks again (delete their files first) may help.	CDRipWindow		Einige Titel stimmen nicht mit AccurateRip überein, der Rest der CD aber schon. Wahrscheinlich haben sie Lesefehler. Die CD zu reinigen und diese Titel erneut zu rippen (vorher ihre Dateien löschen) kann helfen.
+Starting…	CDRipWindow		Starte…
+Status	CDRipWindow		Status
+Stop	CDRipWindow		Stopp
+Stop and close	CDRipWindow		Stoppen und schließen
+Stop and eject	CDRipWindow		Stoppen und auswerfen
+Stop ripping and eject the disc?\n\nTracks that are already finished are kept; the track being ripped now is discarded.	CDRipWindow		Rippen stoppen und die CD auswerfen?\n\nBereits fertige Titel bleiben erhalten; der gerade gerippte Titel wird verworfen.
+Stop ripping?\n\nTracks that are already finished are kept; the track being ripped now is discarded.	CDRipWindow		Rippen stoppen?\n\nBereits fertige Titel bleiben erhalten; der gerade gerippte Titel wird verworfen.
+Stopped	CDRipWindow		Gestoppt
+Stopping…	CDRipWindow		Stoppe…
+The disc could not be read: %s	CDRipWindow		Die CD konnte nicht gelesen werden: %s
+The read offset must be a whole number of samples below 2940, such as +6. Leave it empty to detect it.	CDRipWindow		Der Lese-Offset muss eine ganze Zahl von Samples unter 2940 sein, z. B. +6. Lassen Sie das Feld leer, um ihn zu ermitteln.
+Title	CDRipWindow		Titel
+Total %s	CDRipWindow		Gesamt %s
+Track %ld (%s): %s	CDRipWindow		Titel %ld (%s): %s
+Track %ld of %ld: %s	CDRipWindow		Titel %ld von %ld: %s
+Use / to make subfolders. Fields:	CDRipWindow		Mit / werden Unterordner angelegt. Felder:
+WAV (uncompressed)	CDRipWindow		WAV (unkomprimiert)
+Year:	CDRipWindow		Jahr:
+could not be found for %s on this disc, so this rip isn't checked against AccurateRip. Enter it if you know it.	CDRipWindow		konnte für %s mit dieser CD nicht ermittelt werden, daher wird dieser Rip nicht mit AccurateRip geprüft. Geben Sie ihn ein, wenn Sie ihn kennen.
+samples, detected from AccurateRip for %s	CDRipWindow		Samples, über AccurateRip ermittelt für %s
+samples, for %s	CDRipWindow		Samples, für %s
+samples, from AccurateRip's drive list for %s	CDRipWindow		Samples, aus der AccurateRip-Laufwerksliste für %s
+this drive	CDRipWindow		dieses Laufwerk
+unknown for %s: %+ld worked for this disc, and is kept once another disc agrees	CDRipWindow		unbekannt für %s: %+ld hat bei dieser CD funktioniert und wird übernommen, sobald eine weitere CD dies bestätigt
+unknown for %s: found from AccurateRip when you rip	CDRipWindow		unbekannt für %s: wird beim Rippen über AccurateRip ermittelt
+worst %+ld dB at %ld:%02ld	CDRipWindow		stärkste %+ld dB bei %ld:%02ld
+Damaged spot at %ld:%02ld	CDRipper		Beschädigte Stelle bei %ld:%02ld
+Finding the drive's read offset…	CDRipper		Ermittle den Lese-Offset des Laufwerks…
+Looking up the disc in AccurateRip…	CDRipper		Suche die CD in AccurateRip…
+Looking up the drive in AccurateRip…	CDRipper		Suche das Laufwerk in AccurateRip…
+Re-reading a damaged spot…	CDRipper		Lese beschädigte Stelle erneut…
+Skipped	CDRipper		Übersprungen
+Too damaged	CDRipper		Zu stark beschädigt
+Track %ld: re-reading a damaged spot at %ld:%02ld (sector %lu of %lu)	CDRipper		Titel %ld: lese beschädigte Stelle bei %ld:%02ld erneut (Sektor %lu von %lu)
+not checked: %s	CDRipper		nicht geprüft: %s
+not checked: the disc's table of contents could not be read	CDRipper		nicht geprüft: das Inhaltsverzeichnis der CD konnte nicht gelesen werden
+not checked: the track list doesn't match the disc's table of contents	CDRipper		nicht geprüft: die Titelliste stimmt nicht mit dem Inhaltsverzeichnis der CD überein
+not checked: the tracks don't line up with the disc's table of contents	CDRipper		nicht geprüft: die Titel passen nicht zum Inhaltsverzeichnis der CD
+this disc is not in the database	CDRipper		diese CD ist nicht in der Datenbank
+%ld selected tracks are in sidebar folders and stay.	LibraryController		%ld ausgewählte Titel liegen in Ordnern der Seitenleiste und bleiben erhalten.
+%ld tracks' files can't be found. Remove them from the library?	LibraryController		Die Dateien von %ld Titeln wurden nicht gefunden. Diese Titel aus der Bibliothek entfernen?
+, %zu could not be read or tagged	LibraryController		, %zu konnten nicht gelesen oder getaggt werden
+, %zu partly selected albums got track gain only	LibraryController		, %zu teilweise ausgewählte Alben erhielten nur Titel-Gain
+1 track's file can't be found. Remove it from the library?	LibraryController		Die Datei eines Titels wurde nicht gefunden. Diesen Titel aus der Bibliothek entfernen?
+Add	LibraryController		Hinzufügen
+Adding %ld files to the library...	LibraryController		Füge %ld Dateien zur Bibliothek hinzu...
+Analyzing loudness: %zu of %zu, %s	LibraryController		Analysiere Lautheit: %zu von %zu, %s
+Beton: Add to Library	LibraryController		Beton: Zur Bibliothek hinzufügen
+Cancel	LibraryController		Abbrechen
+Every track in the library has its file.	LibraryController		Zu jedem Titel der Bibliothek ist die Datei vorhanden.
+Looking for music to add...	LibraryController		Suche nach Musik zum Hinzufügen...
+Loudness analysis is already running.	LibraryController		Die Lautheitsanalyse läuft bereits.
+Loudness analyzed: %zu tracks, %zu albums	LibraryController		Lautheit analysiert: %zu Titel, %zu Alben
+Loudness analyzed: %zu tracks, 1 album	LibraryController		Lautheit analysiert: %zu Titel, 1 Album
+No music files found to add.	LibraryController		Keine Musikdateien zum Hinzufügen gefunden.
+Put %ld tracks back in the library.	LibraryController		%ld Titel wieder in die Bibliothek aufgenommen.
+Remove	LibraryController		Entfernen
+Remove %ld tracks from the library?	LibraryController		%ld Titel aus der Bibliothek entfernen?
+Remove Missing Tracks	LibraryController		Fehlende Titel entfernen
+Remove from Library	LibraryController		Aus Bibliothek entfernen
+Remove this track from the library?	LibraryController		Diesen Titel aus der Bibliothek entfernen?
+Removed %ld tracks from the library.	LibraryController		%ld Titel aus der Bibliothek entfernt.
+The files stay where they are. The tracks are also taken out of your playlists.	LibraryController		Die Dateien bleiben, wo sie sind. Die Titel werden auch aus Ihren Playlists entfernt.
+These tracks are in a sidebar folder, so they stay in the library as long as their files are in the folder. Move the files out of the folder or to the Trash to remove them.	LibraryController		Diese Titel liegen in einem Ordner der Seitenleiste und bleiben daher in der Bibliothek, solange ihre Dateien in dem Ordner liegen. Verschieben Sie die Dateien aus dem Ordner oder in den Papierkorb, um sie zu entfernen.
+They are also taken out of your playlists.	LibraryController		Sie werden auch aus Ihren Playlists entfernt.
+%ld items with the same names are already in \"%s\".	LibraryFolderDrop		%ld Einträge mit denselben Namen sind bereits in \"%s\".
+Copied %ld items to %s.	LibraryFolderDrop		%ld Einträge nach %s kopiert.
+Copied %ld items to %s; %ld could not be copied (%s).	LibraryFolderDrop		%ld Einträge nach %s kopiert; %ld konnten nicht kopiert werden (%s).
+Copying %ld items to %s…	LibraryFolderDrop		Kopiere %ld Einträge nach %s…
+Keep both	LibraryFolderDrop		Beide behalten
+Moved %ld items to %s.	LibraryFolderDrop		%ld Einträge nach %s verschoben.
+Name in use	LibraryFolderDrop		Name bereits vergeben
+Nothing to paste: copy or cut files in Tracker first.	LibraryFolderDrop		Nichts zum Einfügen: Zuerst Dateien im Tracker kopieren oder ausschneiden.
+Replace	LibraryFolderDrop		Ersetzen
+Replace moves the files that are there to the Trash. Keep both gives the new ones a number.	LibraryFolderDrop		Ersetzen verschiebt die vorhandenen Dateien in den Papierkorb. Beide behalten gibt den neuen eine Nummer.
+Skip	LibraryFolderDrop		Überspringen
+The folder can't be found.	LibraryFolderDrop		Der Ordner wurde nicht gefunden.
+\"%s\" is already in \"%s\".	LibraryFolderDrop		\"%s\" ist bereits in \"%s\".
+Add to Library…	MainWindow		Zur Bibliothek hinzufügen…
+Album	MainWindow		Album
+Auto (album when played in order)	MainWindow		Automatisch (Album bei Wiedergabe in Reihenfolge)
+Measure tracks without gain while playing	MainWindow		Titel ohne Gain beim Abspielen messen
+Paste	MainWindow		Einfügen
+Remove Missing Tracks	MainWindow		Fehlende Titel entfernen
+ReplayGain	MainWindow		ReplayGain
+Save measured gain in the files	MainWindow		Gemessenen Gain in den Dateien speichern
+Track	MainWindow		Titel
+Version	MainWindow		Version
+Analyze Loudness (ReplayGain)	MediaTableView		Lautheit analysieren (ReplayGain)
+Gain	MediaTableView		Gain
+Remove from Library	MediaTableView		Aus Bibliothek entfernen
+Skipped missing file %file%	PlaybackQueueManager		Fehlende Datei %file% übersprungen
+Could not play %file%	PlaybackTransportController		%file% konnte nicht abgespielt werden
+Eject Disc	PlaylistMessageHandler		CD auswerfen
+OK	PlaylistMessageHandler		OK
+\"%s\" can't be ejected because it is in use.	PlaylistMessageHandler		\"%s\" kann nicht ausgeworfen werden, da es verwendet wird.
+\"%s\" can't be ejected: %s	PlaylistMessageHandler		\"%s\" kann nicht ausgeworfen werden: %s
+Eject Disc	PlaylistSidebarView		CD auswerfen
+OK	PlaylistSidebarView		OK
+Open in Tracker	PlaylistSidebarView		Im Tracker öffnen
+Paste into Folder	PlaylistSidebarView		In Ordner einfügen
+Rip CD…	PlaylistSidebarView		CD rippen…
+The folder \"%s\" can't be found.	PlaylistSidebarView		Der Ordner \"%s\" wurde nicht gefunden.
