@@ -629,8 +629,8 @@ void CDRipper::_ReadDriveChunk(uint32 sector, uint32 count) {
           around = std::max(around, sharpness((uint32)k));
       // A floor near the quietest audible level keeps silence from making
       // every tiny error look huge.
-      const double db = 20.0 * log10(std::max(peak, 1) /
-                                     (double)std::max(around, 64));
+      const double db = 20.0 * log10(std::max<int32>(peak, 1) /
+                                     (double)std::max<int32>(around, 64));
       _NoteGlitchLevel(first + f, db);
       f = end + 1;
     }
